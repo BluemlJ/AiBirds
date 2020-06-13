@@ -14,6 +14,7 @@ from src.trajectory_planner.trajectory_planner import SimpleTrajectoryPlanner
 num_episodes = 1000
 action_size = 10  # the action space discretization resolution in each dimension
 learning_rate = 0.01
+grace_factor = 0.1
 
 # Sling reference point coordinates
 sling_ref_point_x = 191
@@ -22,9 +23,9 @@ sling_ref_point_y = 344
 
 
 class ClientDQNAgent(Thread):
-    """Deep Q-Nework (DQN) agent"""
+    """Deep Q-Network (DQN) agent"""
 
-    def __init__(self, start_level=1, optimizer=tf.optimizers.Adam(learning_rate=learning_rate), gamma=0.9):
+    def __init__(self, start_level=1, sim_speed=1, optimizer=tf.optimizers.Adam(learning_rate=learning_rate), gamma=0.9):
         super().__init__()
 
         with open('./src/client/server_client_config.json', 'r') as config:
@@ -48,6 +49,7 @@ class ClientDQNAgent(Thread):
             print("Error in client-server communication: " + str(e))
 
         self.current_level = start_level
+        self.sim_speed = sim_speed
         self.failed_counter = 0
         self.solved = []
         self.tp = SimpleTrajectoryPlanner()
@@ -79,7 +81,7 @@ class ClientDQNAgent(Thread):
                 tf.keras.layers.Dropout(0.5),
                 tf.keras.layers.Flatten(),
                 tf.keras.layers.Dense(200, activation='relu'),
-                tf.keras.layers.Dense(action_size**3, activation='sigmoid')
+                tf.keras.layers.Dense(action_size ** 3, activation='relu')
             ]
         )
 
@@ -111,7 +113,7 @@ class ClientDQNAgent(Thread):
             # If score is positive, mark level as solved and print that score
             if score > 0:
                 self.solved[level] = 1
-                print("Level ", level+1, ":", score)
+                print("Level ", level + 1, ":", score)
 
         return scores
 
@@ -142,11 +144,7 @@ class ClientDQNAgent(Thread):
         # Initialization
         self.ar.configure(self.id)
         self.observer_ar.configure(self.id)
-        # n_levels = self.update_no_of_levels()
-        # self.solved = n_levels * [0]
-
-        # Check the current score
-        # self.check_my_score()
+        self.ar.set_game_simulation_speed(self.sim_speed)
 
         # Load the first level to train in Science Birds
         self.ar.load_level(self.current_level)
@@ -154,18 +152,14 @@ class ClientDQNAgent(Thread):
         # Train the network for num_episodes episodes
         print("Starting training...")
         self.train()
-
         print("Training finished successfully!")
 
     def train(self):
-        # Initialize variable to monitor the application's state
-        appl_state = self.ar.get_game_state()
-
-        # Initialize return list (list of final scores for each played level)
+        # Initialize return list (list of final scores for each level played)
         returns = []
 
         for i in range(num_episodes):
-            print("\nEpisode %d" % i)
+            print("\nEpisode %d, Level %d" % (i+1, self.ar.get_current_level()))
 
             # Initialize observation buffer (saves states, actions and rewards)
             obs = []
@@ -173,41 +167,69 @@ class ClientDQNAgent(Thread):
             # Initialize current episode's return to 0
             ret = 0
 
+            # Initialize variable to monitor the application's state
+            appl_state = self.ar.get_game_state()
+
             # Get the environment state (cropped screenshot) and save it
             env_state = self.getScreenshot()
-            obs += [env_state]
 
             # Try to solve a level and collect observations (actions, environment state, reward)
             while appl_state == GameState.PLAYING:
+                # Plot the current state
+                self.plot_state(env_state)
 
                 # Predict the next action to take, i.e. the best shot
                 action = self.plan(env_state)
 
                 # Perform shot, observe new environment state and level score
-                env_state, score, appl_state = self.shoot(action)
+                next_env_state, score, appl_state = self.shoot(action)
 
-                # Compute reward (to be the number of in-game points gained with the last shot)
+                # Compute reward (to be the number of additional points gained with the last shot)
                 reward = score - ret
 
                 # Save observation [action, reward, environment state]
-                obs += [action, reward, env_state]
+                obs += [[env_state, action, reward, next_env_state]]
 
                 # Update return
                 ret = score
+
+                # Update old env_state with new one
+                env_state = next_env_state
+
+            print("Playing stopped.")
 
             if not (appl_state == GameState.WON or appl_state == GameState.LOST):
                 print("Error: unexpected application state. The application state is neither WON nor LOST. "
                       "Skipping this training iteration...")
                 break
 
+            # Convert observation list of lists into np.array
+            obs = np.array(obs)
+
+            # If the level is lost, update the return. In the actual case, reward and return would
+            # be zero, but we give some "grace" points, so the network can learn even if it constantly looses.
+            if appl_state == GameState.LOST:
+                # Grace points on return
+                ret *= grace_factor
+
+                # Grace points on all the rewards given during this level
+                obs[:, 2] *= grace_factor
+
+            print("Got return", ret)
+
             # Save the return
             returns += [ret]
 
+            # Every 100 episodes, plot the return graph
+            if (i + 1) % 10 == 0:
+                self.plot_returns(returns)
+
             # Update network weights to fit the newly obtained observations
+            print("Learning from observations...")
             self.update(obs)
 
             # Start the next level
-            self.next_level(appl_state)
+            self.load_next_level(appl_state)
 
         return
 
@@ -215,18 +237,19 @@ class ClientDQNAgent(Thread):
         """Updates the network weights. This is the actual learning step of the agent."""
 
         # Obtain episode length
-        ep_len = int((len(observations) - 1)/3)
+        ep_len = int((observations.shape[0] - 1) / 3)
 
-        for i in range(ep_len):
-            state, action, reward, next_state = observations[i*3], observations[i*3+1], observations[i*3+2], observations[i*3+3]
+        for step, (state, action, reward, next_state) in enumerate(observations):
 
             # Predict Q-values for given state
             target = self.q_network.predict(state)
 
             # Refine Q-values with observed reward
-            if i+4 == len(observations):
+            if step + 1 == ep_len:
+                # If this is the last step, give the reward directly
                 target[0][action] = reward
             else:
+                # Else use reward of this step plus discounted expected return
                 t = self.q_network.predict(next_state)
                 target[0][action] = reward + self.gamma * np.amax(t)
 
@@ -234,21 +257,23 @@ class ClientDQNAgent(Thread):
             self.q_network.fit(state, target, epochs=1, verbose=0)
         return
 
-    def plan(self, image):
+    def plan(self, state):
         """
-        Given a screenshot of the game, the deep Q-learner NN is used to predict a good shot.
+        Given a state of the game, the deep Q-learner NN is used to predict a good shot.
         :return: dx, dy:
         tap_time:
         """
 
         # Obtain action-value pairs (Q)
-        q_vals = self.q_network.predict(image)
+        q_vals = self.q_network.predict(state)
 
         # Reshape the output accordingly
-        q_vals = np.reshape(q_vals, (action_size, action_size, action_size))
+        # q_vals = np.reshape(q_vals, (action_size, action_size, action_size))
 
         # Extract the action which has highest predicted Q-value
         action = q_vals.argmax()
+
+        print("Expected return:", np.amax(q_vals))
 
         return action
 
@@ -261,17 +286,17 @@ class ClientDQNAgent(Thread):
 
         dx = int(action[0] / action_size * -80)
         dy = int(action[1] / action_size * 160 - 80)
-        tap_time = int(action[2] / action_size * 4000)
+        tap_time = int(action[2] / action_size * 3000)
 
         # Validate the predicted shot parameters
-        # TODO: Verify these constraints
+        # TODO: Verify if these constraints make sense
         if dx > 0:
             print("The agent tries to shoot to the left!")
         if dx < -80:
             print("Sling stretch too strong in x-direction.")
         if dy < -80 or dy > 80:
             print("Sling stretch too strong in y-direction.")
-        if tap_time > 4000:
+        if tap_time > 3000:
             print("Very long tap time!")
 
         # Perform the shot
@@ -300,65 +325,38 @@ class ClientDQNAgent(Thread):
         # The cropped image has then dimension (325, 800, 3).
         image = image[75:400, 40:]
 
-        plt.imshow(image)
-        plt.show()
-
         # Normalize the image
         image = image.astype(np.float32)
-        image = image/255
+        image = image / 255
         image = np.reshape(image, (1, 325, 800, 3))
 
         return image
 
-    def next_level(self, appl_state):
-        """Update the current_level variable according to given application state."""
+    def plot_state(self, state):
+        # De-normalize state into image
+        state = np.reshape(state, (325, 800, 3))
+        image = (state * 255).astype(np.int)
 
-        # If the level is solved, go to the next level
-        if appl_state == GameState.WON:
+        # Plot it
+        plt.imshow(image)
+        plt.show()
 
-            # Check for change of number of levels in the game
-            self.update_no_of_levels()
+    def plot_returns(self, returns):
+        plt.plot(returns)
+        plt.title("Returns gathered so far")
+        plt.xlabel("Episode")
+        plt.ylabel("Return")
+        plt.show()
 
-            # Check the current score
-            self.check_my_score()
+    def load_next_level(self, appl_state):
+        """Update the current_level variable and load the next level according to given application state."""
 
-            # Update the level
-            self.current_level = self.get_next_level()
+        # In any case, pick a random level between 1 and 200
+        next_level = np.random.randint(199) + 1
 
-            # Load the new level and re-initialize the trajectory planner
-            self.ar.load_level(self.current_level)
-            self.tp = SimpleTrajectoryPlanner()
+        self.current_level = next_level
 
-        # If lost, then restart the level
-        elif appl_state == GameState.LOST:
-
-            # Check for change of number of levels in the game
-            self.update_no_of_levels()
-
-            # Check the current score
-            self.check_my_score()
-
-            # Increase the failed counter for this level
-            self.failed_counter += 1
-
-            # Restart the level
-            self.ar.restart_level()
-
-        # Handle unexpected cases
-        elif appl_state == GameState.LEVEL_SELECTION:
-            print("Unexpected level selection page, go to the last current level: "
-                  , self.current_level)
-            self.ar.load_level(self.current_level)
-
-        elif appl_state == GameState.MAIN_MENU:
-            print("Unexpected main menu page, go to the last current level: "
-                  , self.current_level)
-            self.ar.load_level(self.current_level)
-
-        elif appl_state == GameState.EPISODE_MENU:
-            print("Unexpected episode menu page, go to the last current level: "
-                  , self.current_level)
-            self.ar.load_level(self.current_level)
+        self.ar.load_level(next_level)
 
 
 if __name__ == "__main__":
