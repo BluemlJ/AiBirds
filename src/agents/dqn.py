@@ -4,6 +4,7 @@ import json
 import socket
 import logging
 import numpy as np
+import cv2
 from threading import Thread
 import tensorflow as tf
 from tensorflow import keras
@@ -12,20 +13,30 @@ from src.client.agent_client import AgentClient, GameState
 from src.trajectory_planner.trajectory_planner import SimpleTrajectoryPlanner
 
 num_episodes = 1000
-action_size = 10  # the action space discretization resolution in each dimension
+angle_res = 20  # angle resolution: the number of possible (discretized) shot angles
+tap_time_res = 10  # tap time resolution: the number of possible tap times
+# action_size = 6  # the action space discretization resolution in each dimension
+state_x_dim = 124
 learning_rate = 0.01
 grace_factor = 0.1
+score_normalization = 100000
+phi = 10
+psi = 40
+max_t = 4000
 
 # Sling reference point coordinates
 sling_ref_point_x = 191
 sling_ref_point_y = 344
+
+
 # TODO: Does the sling reference point change?
 
 
 class ClientDQNAgent(Thread):
     """Deep Q-Network (DQN) agent"""
 
-    def __init__(self, start_level=1, sim_speed=1, optimizer=tf.optimizers.Adam(learning_rate=learning_rate), gamma=0.9):
+    def __init__(self, start_level=1, sim_speed=1, optimizer=tf.optimizers.Adam(learning_rate=learning_rate),
+                 gamma=0.9):
         super().__init__()
 
         with open('./src/client/server_client_config.json', 'r') as config:
@@ -50,6 +61,8 @@ class ClientDQNAgent(Thread):
 
         self.current_level = start_level
         self.sim_speed = sim_speed
+        self.epsilon = 1
+        self.cool_down = 0.98
         self.failed_counter = 0
         self.solved = []
         self.tp = SimpleTrajectoryPlanner()
@@ -71,7 +84,7 @@ class ClientDQNAgent(Thread):
     def _build_compile_model(self):
         model = keras.Sequential(
             [
-                tf.keras.layers.Conv2D(32, (6, 6), activation='relu', input_shape=(325, 800, 3)),
+                tf.keras.layers.Conv2D(32, (6, 6), activation='relu', input_shape=(state_x_dim, state_x_dim, 3)),
                 tf.keras.layers.MaxPooling2D((2, 2)),
                 tf.keras.layers.Dropout(0.25),
                 tf.keras.layers.Conv2D(64, (4, 4), activation='relu'),
@@ -81,7 +94,7 @@ class ClientDQNAgent(Thread):
                 tf.keras.layers.Dropout(0.5),
                 tf.keras.layers.Flatten(),
                 tf.keras.layers.Dense(200, activation='relu'),
-                tf.keras.layers.Dense(action_size ** 3, activation='relu')
+                tf.keras.layers.Dense(angle_res * tap_time_res, activation='relu')
             ]
         )
 
@@ -159,7 +172,7 @@ class ClientDQNAgent(Thread):
         returns = []
 
         for i in range(num_episodes):
-            print("\nEpisode %d, Level %d" % (i+1, self.ar.get_current_level()))
+            print("\nEpisode %d, Level %d" % (i + 1, self.ar.get_current_level()))
 
             # Initialize observation buffer (saves states, actions and rewards)
             obs = []
@@ -171,12 +184,12 @@ class ClientDQNAgent(Thread):
             appl_state = self.ar.get_game_state()
 
             # Get the environment state (cropped screenshot) and save it
-            env_state = self.getScreenshot()
+            env_state = self.get_state()
 
             # Try to solve a level and collect observations (actions, environment state, reward)
             while appl_state == GameState.PLAYING:
                 # Plot the current state
-                self.plot_state(env_state)
+                # self.plot_state(env_state)
 
                 # Predict the next action to take, i.e. the best shot
                 action = self.plan(env_state)
@@ -220,16 +233,19 @@ class ClientDQNAgent(Thread):
             # Save the return
             returns += [ret]
 
-            # Every 100 episodes, plot the return graph
+            # Every X episodes, plot the return graph
             if (i + 1) % 10 == 0:
                 self.plot_returns(returns)
+
+            # Start the next level
+            self.load_next_level(appl_state)
 
             # Update network weights to fit the newly obtained observations
             print("Learning from observations...")
             self.update(obs)
 
-            # Start the next level
-            self.load_next_level(appl_state)
+            # Cool down: reduce epsilon to reduce randomness
+            self.epsilon *= self.cool_down
 
         return
 
@@ -267,29 +283,30 @@ class ClientDQNAgent(Thread):
         # Obtain action-value pairs (Q)
         q_vals = self.q_network.predict(state)
 
-        # Reshape the output accordingly
-        # q_vals = np.reshape(q_vals, (action_size, action_size, action_size))
+        if np.random.random(1) > self.epsilon:
+            # Determine optimal action as usual
+            # Extract the action which has highest predicted Q-value
+            action = q_vals.argmax()
+        else:
+            # Choose action by random
+            action = np.random.randint(angle_res * tap_time_res)
 
-        # Extract the action which has highest predicted Q-value
-        action = q_vals.argmax()
-
-        print("Expected return:", np.amax(q_vals))
+        print("Expected return:", int(np.amax(q_vals) * score_normalization))
 
         return action
 
     def shoot(self, action):
         """Performs a shot and observes and returns the consequences."""
 
-        # Convert it into coordinates and time for environment input
-        action = np.unravel_index(action, (action_size, action_size, action_size))
-        print("Action:", action)
+        # Convert action index into aim vector and tap time
+        dx, dy, tap_time = self.action_to_params(action)
 
-        dx = int(action[0] / action_size * -80)
-        dy = int(action[1] / action_size * 160 - 80)
-        tap_time = int(action[2] / action_size * 3000)
+        '''# TODO: Verify if these constraints are useful
+        dx = int(action[0] / action_size * -80)  # in interval [-80, -10]
+        dy = int(action[1] / action_size * 160 - 80)  # in interval [-50, ]
+        tap_time = int(action[2] / action_size * 3000)  # in interval [0, 3000]
 
         # Validate the predicted shot parameters
-        # TODO: Verify if these constraints make sense
         if dx > 0:
             print("The agent tries to shoot to the left!")
         if dx < -80:
@@ -297,7 +314,7 @@ class ClientDQNAgent(Thread):
         if dy < -80 or dy > 80:
             print("Sling stretch too strong in y-direction.")
         if tap_time > 3000:
-            print("Very long tap time!")
+            print("Very long tap time!")'''
 
         # Perform the shot
         print("Shooting with dx = %d, dy = %d, tap_time = %d" % (dx, dy, tap_time))
@@ -306,31 +323,67 @@ class ClientDQNAgent(Thread):
         print("Collecting observations...")
 
         # Get the environment state (cropped screenshot)
-        env_state = self.getScreenshot()
+        env_state = self.get_state()
 
-        # Obtain in-game score
-        score = self.ar.get_current_score()
+        # Obtain in-game score, normalized
+        score = self.ar.get_current_score() / score_normalization
 
         # Get the application state and return it
         appl_state = self.ar.get_game_state()
 
         return env_state, score, appl_state
 
-    def getScreenshot(self):
-        """Fetch the current game screenshot."""
+    def action_to_params(self, action):
+        """Converts a given action index into the corresponding angle and tap time."""
 
-        image, _ = self.ar.get_ground_truth_with_screenshot()
+        # Convert the action index into index pair, indicating angle and tap_time
+        action = np.unravel_index(action, (angle_res, tap_time_res))
+        print("Action:", action)
+
+        # Formula parameters, TODO: to be tuned
+        c = 3.6
+        d = 1.8
+
+        # Retrieve shot angle alpha
+        k = action[0] / angle_res
+        alpha = ((1 + 0.5 * c) * k - 3 / 2 * c * k ** 2 + c * k ** 3) ** d * (180 - phi - psi)
+
+        print("alpha: %d" % alpha)
+
+        # Convert angle into vector
+        dx, dy = self.angle_to_vector(alpha)
+
+        # Retrieve tap time
+        t = action[1]
+        tap_time = int(t / 10 * max_t)
+
+        return dx, dy, tap_time
+
+    def angle_to_vector(self, alpha):
+        rad_shot_angle = np.deg2rad(alpha + phi)
+
+        dx = - np.sin(rad_shot_angle) * 80
+        dy = np.cos(rad_shot_angle) * 80
+
+        return int(dx), int(dy)
+
+    def get_state(self):
+        """Fetches the current game screenshot and turns it into a cropped, scaled and normalized pixel matrix."""
+
+        # Obtain game screenshot
+        screenshot, _ = self.ar.get_ground_truth_with_screenshot()
 
         # Crop the image to reduce information overload.
         # The cropped image has then dimension (325, 800, 3).
-        image = image[75:400, 40:]
+        crop = screenshot[75:400, 40:]
 
-        # Normalize the image
-        image = image.astype(np.float32)
-        image = image / 255
-        image = np.reshape(image, (1, 325, 800, 3))
+        # Rescale the image into a (smaller) square
+        scaled = cv2.resize(crop, (state_x_dim, state_x_dim))
 
-        return image
+        # Normalize the scaled and cropped image
+        state = np.expand_dims(scaled.astype(np.float32) / 255, axis=0)
+
+        return state
 
     def plot_state(self, state):
         # De-normalize state into image
@@ -342,6 +395,7 @@ class ClientDQNAgent(Thread):
         plt.show()
 
     def plot_returns(self, returns):
+        returns = np.array(returns) * score_normalization
         plt.plot(returns)
         plt.title("Returns gathered so far")
         plt.xlabel("Episode")
