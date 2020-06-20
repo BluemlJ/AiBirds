@@ -2,7 +2,6 @@ import time
 import matplotlib.pyplot as plt
 import json
 import socket
-import logging
 import numpy as np
 import cv2
 from threading import Thread
@@ -10,7 +9,6 @@ import tensorflow as tf
 from tensorflow import keras
 
 from src.client.agent_client import AgentClient, GameState
-from src.trajectory_planner.trajectory_planner import SimpleTrajectoryPlanner
 
 num_episodes = 1000
 angle_res = 20  # angle resolution: the number of possible (discretized) shot angles
@@ -23,13 +21,11 @@ score_normalization = 100000
 phi = 10
 psi = 40
 max_t = 4000
+sync_period = 100  # Number of levels between each synchronization of online and target network
 
-# Sling reference point coordinates
+# Sling reference point coordinates TODO: Do these coordinates change?
 sling_ref_point_x = 191
 sling_ref_point_y = 344
-
-
-# TODO: Does the sling reference point change?
 
 
 class ClientDQNAgent(Thread):
@@ -59,25 +55,29 @@ class ClientDQNAgent(Thread):
         except socket.error as e:
             print("Error in client-server communication: " + str(e))
 
+        # General model parameters
+        self.solved = []
+        self.id = 28888
+
+        # Game parameters
         self.current_level = start_level
         self.sim_speed = sim_speed
-        self.epsilon = 1
-        self.cool_down = 0.98
-        self.failed_counter = 0
-        self.solved = []
-        self.tp = SimpleTrajectoryPlanner()
-        self.id = 28888
-        self.first_shot = True
-        self.prev_target = None
-        self._logger = logging.getLogger("ClientNaiveAgent")
-
-        self._optimizer = optimizer
-
-        # Initialize the deep Q-network architecture
-        self.q_network = self._build_compile_model()
 
         # Discount factor
         self.gamma = gamma
+
+        # Parameters for cooling down epsilon greedy
+        self.epsilon = 1
+        self.cool_down = 0.98
+
+        # Training optimizer
+        self._optimizer = optimizer
+
+        # Initialize the architecture of the acting part of the DQN, theta
+        self.online_network = self._build_compile_model()
+
+        # Initialize the architecture of the learning part of the DQN (identical to above), theta-
+        self.target_network = self.online_network
 
         print('DQN agent initialized.')
 
@@ -168,13 +168,16 @@ class ClientDQNAgent(Thread):
         print("Training finished successfully!")
 
     def train(self):
+        # Initialize experience buffer, containing all (s, a, r, s', t) tuples experienced so far
+        experience = np.empty((0, 5))
+
         # Initialize return list (list of final scores for each level played)
         returns = []
 
         for i in range(num_episodes):
             print("\nEpisode %d, Level %d" % (i + 1, self.ar.get_current_level()))
 
-            # Initialize observation buffer (saves states, actions and rewards)
+            # Observations during the current level: list of (s, a, r, s', t) tuples
             obs = []
 
             # Initialize current episode's return to 0
@@ -183,7 +186,7 @@ class ClientDQNAgent(Thread):
             # Initialize variable to monitor the application's state
             appl_state = self.ar.get_game_state()
 
-            # Get the environment state (cropped screenshot) and save it
+            # Get the environment state (preprocessed screenshot) and save it
             env_state = self.get_state()
 
             # Try to solve a level and collect observations (actions, environment state, reward)
@@ -194,14 +197,17 @@ class ClientDQNAgent(Thread):
                 # Predict the next action to take, i.e. the best shot
                 action = self.plan(env_state)
 
-                # Perform shot, observe new environment state and level score
+                # Perform shot, observe new environment state, level score and application state
                 next_env_state, score, appl_state = self.shoot(action)
 
                 # Compute reward (to be the number of additional points gained with the last shot)
                 reward = score - ret
 
-                # Save observation [action, reward, environment state]
-                obs += [[env_state, action, reward, next_env_state]]
+                # Observe if this level was terminated
+                terminal = not appl_state == GameState.PLAYING
+
+                # Save new experience (s, a, r, s', t)
+                obs += [(env_state, action, reward, next_env_state, terminal)]
 
                 # Update return
                 ret = score
@@ -209,14 +215,12 @@ class ClientDQNAgent(Thread):
                 # Update old env_state with new one
                 env_state = next_env_state
 
-            print("Playing stopped.")
-
             if not (appl_state == GameState.WON or appl_state == GameState.LOST):
                 print("Error: unexpected application state. The application state is neither WON nor LOST. "
                       "Skipping this training iteration...")
                 break
 
-            # Convert observation list of lists into np.array
+            # Convert observations list into np.array
             obs = np.array(obs)
 
             # If the level is lost, update the return. In the actual case, reward and return would
@@ -237,41 +241,63 @@ class ClientDQNAgent(Thread):
             if (i + 1) % 10 == 0:
                 self.plot_returns(returns)
 
-            # Start the next level
+            # Append observations to experience buffer
+            experience = np.append(experience, obs, axis=0)
+
+            # Load next level (in advance)
             self.load_next_level(appl_state)
 
-            # Update network weights to fit the newly obtained observations
-            print("Learning from observations...")
-            self.update(obs)
+            # Train every X levels
+            if (i + 1) % 10 == 0:
+                # Update network weights to fit the experience
+                print("Learning from experience...")
+                self.update(experience)
+
+            # Synchronize target and online network every Y levels
+            if (i + 1) % sync_period == 0:
+                self.target_network = self.online_network
 
             # Cool down: reduce epsilon to reduce randomness
             self.epsilon *= self.cool_down
 
-        return
-
-    def update(self, observations):
+    def update(self, experience):
         """Updates the network weights. This is the actual learning step of the agent."""
 
-        # Obtain episode length
-        ep_len = int((observations.shape[0] - 1) / 3)
+        # Obtain number of experienced transitions
+        exp_len = experience.shape[0]
 
-        for step, (state, action, reward, next_state) in enumerate(observations):
+        # Obtain batch size
+        batch_size = np.min((exp_len, 32))
 
-            # Predict Q-values for given state
-            target = self.q_network.predict(state)
+        # Select a random batch from experience to train on, TODO: implement Expereince Replay
+        batch_ids = np.random.choice(exp_len, batch_size)
+        batch = experience[batch_ids]
+
+        states = []
+        targets = []
+
+        for state, action, reward, next_state, terminal in batch:
+
+            # Predict Q-value matrix for given state
+            target = self.target_network.predict(state)
 
             # Refine Q-values with observed reward
-            if step + 1 == ep_len:
-                # If this is the last step, give the reward directly
+            if terminal:
+                # If this is the last step, take the reward plainly
                 target[0][action] = reward
             else:
-                # Else use reward of this step plus discounted expected return
-                t = self.q_network.predict(next_state)
+                # Else, use reward of this step plus discounted expected return
+                t = self.target_network.predict(next_state)
                 target[0][action] = reward + self.gamma * np.amax(t)
 
-            # Update the network weights
-            self.q_network.fit(state, target, epochs=1, verbose=0)
-        return
+            states += [state[0]]
+            targets += [target[0]]
+
+        states = np.asarray(states)
+        targets = np.asarray(targets)
+
+        # Update the online network's weights
+        self.online_network.fit(states, targets, epochs=1, verbose=0, batch_size=batch_size)
 
     def plan(self, state):
         """
@@ -281,7 +307,7 @@ class ClientDQNAgent(Thread):
         """
 
         # Obtain action-value pairs (Q)
-        q_vals = self.q_network.predict(state)
+        q_vals = self.online_network.predict(state)
 
         if np.random.random(1) > self.epsilon:
             # Determine optimal action as usual
@@ -396,10 +422,26 @@ class ClientDQNAgent(Thread):
 
     def plot_returns(self, returns):
         returns = np.array(returns) * score_normalization
-        plt.plot(returns)
-        plt.title("Returns gathered so far")
+        plt.plot(returns, label="Raw scores")
+
+        if len(returns) > 10:
+            mov_avg_ret = np.cumsum(returns, dtype=float)
+            mov_avg_ret[10:] = mov_avg_ret[10:] - mov_avg_ret[:-10]
+            mov_avg_ret = mov_avg_ret[10 - 1:] / 10
+            mov_avg_ret = np.insert(mov_avg_ret, 0, 5 * [None])
+            plt.plot(mov_avg_ret, label="Moving average 10")
+
+        if len(returns) > 100:
+            mov_avg_ret = np.cumsum(returns, dtype=float)
+            mov_avg_ret[100:] = mov_avg_ret[100:] - mov_avg_ret[:-100]
+            mov_avg_ret = mov_avg_ret[100 - 1:] / 100
+            mov_avg_ret = np.insert(mov_avg_ret, 0, 50 * [None])
+            plt.plot(mov_avg_ret, label="Moving average 100")
+
+        plt.title("Scores gathered so far")
         plt.xlabel("Episode")
-        plt.ylabel("Return")
+        plt.ylabel("Score")
+        plt.legend()
         plt.show()
 
     def load_next_level(self, appl_state):
