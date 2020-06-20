@@ -189,7 +189,7 @@ class AgentClient:
         # TODO: Remove after Debug
         # rgb_image.save(os.path.join('./', 'test'), format='png')
 
-        print('Received screenshot')
+        # print('Received screenshot')
 
         img = np.array(rgb_image)
         # Convert RGB to BGR

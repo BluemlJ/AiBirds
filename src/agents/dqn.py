@@ -7,25 +7,109 @@ import cv2
 from threading import Thread
 import tensorflow as tf
 from tensorflow import keras
+from tensorflow.keras.initializers import VarianceScaling
 
 from src.client.agent_client import AgentClient, GameState
 
-num_episodes = 1000
+num_episodes = 100000
 angle_res = 20  # angle resolution: the number of possible (discretized) shot angles
 tap_time_res = 10  # tap time resolution: the number of possible tap times
-# action_size = 6  # the action space discretization resolution in each dimension
 state_x_dim = 124
-learning_rate = 0.01
-grace_factor = 0.1
-score_normalization = 100000
+learning_rate = 0.00001  # DQN for AB paper used 0.00001
+grace_factor = 0
+score_normalization = 10000
 phi = 10
 psi = 40
-max_t = 4000
-sync_period = 100  # Number of levels between each synchronization of online and target network
+max_t = 4000  # maximum tap time
+train_period = 10  # number of levels between each training of the online network
+sync_period = 200  # number of levels between each synchronization of online and target network
 
 # Sling reference point coordinates TODO: Do these coordinates change?
 sling_ref_point_x = 191
 sling_ref_point_y = 344
+
+
+def get_moving_avg(list, n):
+    """Computes the moving average with window size n of a list of numbers. The output list
+    is padded at the beginning."""
+    mov_avg = np.cumsum(list, dtype=float)
+    mov_avg[n:] = mov_avg[n:] - mov_avg[:-n]
+    mov_avg = mov_avg[n - 1:] / n
+    mov_avg = np.insert(mov_avg, 0, int(n / 2) * [None])
+    return mov_avg
+
+
+def plot_returns(returns):
+    returns = np.array(returns) * score_normalization
+    # plt.plot(returns, label="Raw scores")
+
+    # Window sizes for moving average
+    w1 = 100
+    w2 = 500
+    w3 = 2000
+
+    if len(returns) > w1:
+        mov_avg_ret = get_moving_avg(returns, w1)
+        plt.plot(mov_avg_ret, label="Moving average %d" % w1)
+
+    if len(returns) > w2:
+        mov_avg_ret = get_moving_avg(returns, w2)
+        plt.plot(mov_avg_ret, label="Moving average %d" % w2)
+
+    if len(returns) > w3:
+        mov_avg_ret = get_moving_avg(returns, w3)
+        plt.plot(mov_avg_ret, label="Moving average %d" % w3)
+
+    plt.title("Scores gathered so far")
+    plt.xlabel("Episode")
+    plt.ylabel("Score")
+    plt.legend()
+    plt.show()
+
+
+def plot_state(state):
+    # De-normalize state into image
+    state = np.reshape(state, (124, 124, 3))
+    image = (state * 255).astype(np.int)
+
+    # Plot it
+    plt.imshow(image)
+    plt.show()
+
+
+def angle_to_vector(alpha):
+    rad_shot_angle = np.deg2rad(alpha)
+
+    dx = - np.sin(rad_shot_angle) * 80
+    dy = np.cos(rad_shot_angle) * 80
+
+    return int(dx), int(dy)
+
+
+def action_to_params(action):
+    """Converts a given action index into the corresponding angle and tap time."""
+
+    # Convert the action index into index pair, indicating angle and tap_time
+    action = np.unravel_index(action, (angle_res, tap_time_res))
+
+    # Formula parameters, TODO: to be tuned
+    c = 3.6
+    d = 1.3
+
+    # Retrieve shot angle alpha
+    k = action[0] / angle_res
+    alpha = ((1 + 0.5 * c) * k - 3 / 2 * c * k ** 2 + c * k ** 3) ** d * (180 - phi - psi) + phi
+
+    # Convert angle into vector
+    dx, dy = angle_to_vector(alpha)
+
+    # Retrieve tap time
+    t = action[1]
+    tap_time = int(t / 10 * max_t)
+
+    print("Shooting with: alpha = %d °, tap time = %d ms" % (alpha, tap_time))
+
+    return dx, dy, tap_time
 
 
 class ClientDQNAgent(Thread):
@@ -66,9 +150,9 @@ class ClientDQNAgent(Thread):
         # Discount factor
         self.gamma = gamma
 
-        # Parameters for cooling down epsilon greedy
+        # Parameters for annealing epsilon greedy
         self.epsilon = 1
-        self.cool_down = 0.98
+        self.anneal = 0.9999
 
         # Training optimizer
         self._optimizer = optimizer
@@ -84,21 +168,30 @@ class ClientDQNAgent(Thread):
     def _build_compile_model(self):
         model = keras.Sequential(
             [
-                tf.keras.layers.Conv2D(32, (6, 6), activation='relu', input_shape=(state_x_dim, state_x_dim, 3)),
-                tf.keras.layers.MaxPooling2D((2, 2)),
-                tf.keras.layers.Dropout(0.25),
-                tf.keras.layers.Conv2D(64, (4, 4), activation='relu'),
-                tf.keras.layers.MaxPooling2D((2, 2)),
-                tf.keras.layers.Dropout(0.5),
-                tf.keras.layers.Conv2D(64, (3, 3), activation='relu'),
-                tf.keras.layers.Dropout(0.5),
+                tf.keras.layers.Conv2D(32, (8, 8), strides=4, kernel_initializer=VarianceScaling(scale=2.),
+                                       activation='relu', use_bias=False, input_shape=(state_x_dim, state_x_dim, 3)),
+                # tf.keras.layers.Dropout(0.25),
+
+                tf.keras.layers.Conv2D(64, (4, 4), strides=2, kernel_initializer=VarianceScaling(scale=2.),
+                                       activation='relu', use_bias=False),
+                # tf.keras.layers.Dropout(0.5),
+
+                tf.keras.layers.Conv2D(64, (3, 3), strides=1, kernel_initializer=VarianceScaling(scale=2.),
+                                       activation='relu', use_bias=False),
+                # tf.keras.layers.Dropout(0.5),
+
+                tf.keras.layers.Conv2D(1024, (7, 7), strides=1, kernel_initializer=VarianceScaling(scale=2.),
+                                       activation='relu', use_bias=False),
+                # tf.keras.layers.Dropout(0.5),
                 tf.keras.layers.Flatten(),
-                tf.keras.layers.Dense(200, activation='relu'),
-                tf.keras.layers.Dense(angle_res * tap_time_res, activation='relu')
+
+                tf.keras.layers.Dense(100, activation='relu'),
+
+                tf.keras.layers.Dense(angle_res * tap_time_res, activation='linear')
             ]
         )
 
-        model.compile(loss='mse', optimizer=self._optimizer)
+        model.compile(loss='huber_loss', optimizer=self._optimizer)
 
         return model
 
@@ -175,7 +268,7 @@ class ClientDQNAgent(Thread):
         returns = []
 
         for i in range(num_episodes):
-            print("\nEpisode %d, Level %d" % (i + 1, self.ar.get_current_level()))
+            print("\nEpisode %d, Level %d, epsilon = %f" % (i + 1, self.ar.get_current_level(), self.epsilon))
 
             # Observations during the current level: list of (s, a, r, s', t) tuples
             obs = []
@@ -232,14 +325,14 @@ class ClientDQNAgent(Thread):
                 # Grace points on all the rewards given during this level
                 obs[:, 2] *= grace_factor
 
-            print("Got return", ret)
+            print("Got level score %d" % (ret * score_normalization))
 
             # Save the return
             returns += [ret]
 
             # Every X episodes, plot the return graph
             if (i + 1) % 10 == 0:
-                self.plot_returns(returns)
+                plot_returns(returns)
 
             # Append observations to experience buffer
             experience = np.append(experience, obs, axis=0)
@@ -247,21 +340,21 @@ class ClientDQNAgent(Thread):
             # Load next level (in advance)
             self.load_next_level(appl_state)
 
-            # Train every X levels
-            if (i + 1) % 10 == 0:
+            # Train every train_period levels
+            if (i + 1) % train_period == 0:
                 # Update network weights to fit the experience
-                print("Learning from experience...")
+                print("\nLearning from experience...")
                 self.update(experience)
 
-            # Synchronize target and online network every Y levels
+            # Synchronize target and online network every sync_period levels
             if (i + 1) % sync_period == 0:
                 self.target_network = self.online_network
 
             # Cool down: reduce epsilon to reduce randomness
-            self.epsilon *= self.cool_down
+            self.epsilon *= self.anneal
 
     def update(self, experience):
-        """Updates the network weights. This is the actual learning step of the agent."""
+        """Updates the online network's weights. This is the actual learning step of the agent."""
 
         # Obtain number of experienced transitions
         exp_len = experience.shape[0]
@@ -306,7 +399,7 @@ class ClientDQNAgent(Thread):
         tap_time:
         """
 
-        # Obtain action-value pairs (Q)
+        # Obtain action-value pairs, Q(s,a)
         q_vals = self.online_network.predict(state)
 
         if np.random.random(1) > self.epsilon:
@@ -317,7 +410,7 @@ class ClientDQNAgent(Thread):
             # Choose action by random
             action = np.random.randint(angle_res * tap_time_res)
 
-        print("Expected return:", int(np.amax(q_vals) * score_normalization))
+        print("Expected level score:", int(np.amax(q_vals) * score_normalization))
 
         return action
 
@@ -325,28 +418,11 @@ class ClientDQNAgent(Thread):
         """Performs a shot and observes and returns the consequences."""
 
         # Convert action index into aim vector and tap time
-        dx, dy, tap_time = self.action_to_params(action)
-
-        '''# TODO: Verify if these constraints are useful
-        dx = int(action[0] / action_size * -80)  # in interval [-80, -10]
-        dy = int(action[1] / action_size * 160 - 80)  # in interval [-50, ]
-        tap_time = int(action[2] / action_size * 3000)  # in interval [0, 3000]
-
-        # Validate the predicted shot parameters
-        if dx > 0:
-            print("The agent tries to shoot to the left!")
-        if dx < -80:
-            print("Sling stretch too strong in x-direction.")
-        if dy < -80 or dy > 80:
-            print("Sling stretch too strong in y-direction.")
-        if tap_time > 3000:
-            print("Very long tap time!")'''
+        dx, dy, tap_time = action_to_params(action)
 
         # Perform the shot
-        print("Shooting with dx = %d, dy = %d, tap_time = %d" % (dx, dy, tap_time))
+        # print("Shooting with dx = %d, dy = %d, tap_time = %d" % (dx, dy, tap_time))
         self.ar.shoot(sling_ref_point_x, sling_ref_point_y, dx, dy, 0, tap_time, isPolar=False)
-
-        print("Collecting observations...")
 
         # Get the environment state (cropped screenshot)
         env_state = self.get_state()
@@ -358,40 +434,6 @@ class ClientDQNAgent(Thread):
         appl_state = self.ar.get_game_state()
 
         return env_state, score, appl_state
-
-    def action_to_params(self, action):
-        """Converts a given action index into the corresponding angle and tap time."""
-
-        # Convert the action index into index pair, indicating angle and tap_time
-        action = np.unravel_index(action, (angle_res, tap_time_res))
-        print("Action:", action)
-
-        # Formula parameters, TODO: to be tuned
-        c = 3.6
-        d = 1.8
-
-        # Retrieve shot angle alpha
-        k = action[0] / angle_res
-        alpha = ((1 + 0.5 * c) * k - 3 / 2 * c * k ** 2 + c * k ** 3) ** d * (180 - phi - psi)
-
-        print("alpha: %d" % alpha)
-
-        # Convert angle into vector
-        dx, dy = self.angle_to_vector(alpha)
-
-        # Retrieve tap time
-        t = action[1]
-        tap_time = int(t / 10 * max_t)
-
-        return dx, dy, tap_time
-
-    def angle_to_vector(self, alpha):
-        rad_shot_angle = np.deg2rad(alpha + phi)
-
-        dx = - np.sin(rad_shot_angle) * 80
-        dy = np.cos(rad_shot_angle) * 80
-
-        return int(dx), int(dy)
 
     def get_state(self):
         """Fetches the current game screenshot and turns it into a cropped, scaled and normalized pixel matrix."""
@@ -410,39 +452,6 @@ class ClientDQNAgent(Thread):
         state = np.expand_dims(scaled.astype(np.float32) / 255, axis=0)
 
         return state
-
-    def plot_state(self, state):
-        # De-normalize state into image
-        state = np.reshape(state, (325, 800, 3))
-        image = (state * 255).astype(np.int)
-
-        # Plot it
-        plt.imshow(image)
-        plt.show()
-
-    def plot_returns(self, returns):
-        returns = np.array(returns) * score_normalization
-        plt.plot(returns, label="Raw scores")
-
-        if len(returns) > 10:
-            mov_avg_ret = np.cumsum(returns, dtype=float)
-            mov_avg_ret[10:] = mov_avg_ret[10:] - mov_avg_ret[:-10]
-            mov_avg_ret = mov_avg_ret[10 - 1:] / 10
-            mov_avg_ret = np.insert(mov_avg_ret, 0, 5 * [None])
-            plt.plot(mov_avg_ret, label="Moving average 10")
-
-        if len(returns) > 100:
-            mov_avg_ret = np.cumsum(returns, dtype=float)
-            mov_avg_ret[100:] = mov_avg_ret[100:] - mov_avg_ret[:-100]
-            mov_avg_ret = mov_avg_ret[100 - 1:] / 100
-            mov_avg_ret = np.insert(mov_avg_ret, 0, 50 * [None])
-            plt.plot(mov_avg_ret, label="Moving average 100")
-
-        plt.title("Scores gathered so far")
-        plt.xlabel("Episode")
-        plt.ylabel("Score")
-        plt.legend()
-        plt.show()
 
     def load_next_level(self, appl_state):
         """Update the current_level variable and load the next level according to given application state."""
