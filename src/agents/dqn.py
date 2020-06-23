@@ -1,122 +1,18 @@
-import time
-import matplotlib.pyplot as plt
 import json
 import socket
-import numpy as np
 import cv2
 from threading import Thread
 import tensorflow as tf
 from tensorflow import keras
 from tensorflow.keras.initializers import VarianceScaling
-
 from src.client.agent_client import AgentClient, GameState
-
-num_episodes = 100000
-angle_res = 20  # angle resolution: the number of possible (discretized) shot angles
-tap_time_res = 10  # tap time resolution: the number of possible tap times
-state_x_dim = 124
-learning_rate = 0.00001  # DQN for AB paper used 0.00001
-grace_factor = 0
-score_normalization = 10000
-phi = 10
-psi = 40
-max_t = 4000  # maximum tap time
-train_period = 10  # number of levels between each training of the online network
-sync_period = 200  # number of levels between each synchronization of online and target network
-
-# Sling reference point coordinates TODO: Do these coordinates change?
-sling_ref_point_x = 191
-sling_ref_point_y = 344
-
-
-def get_moving_avg(list, n):
-    """Computes the moving average with window size n of a list of numbers. The output list
-    is padded at the beginning."""
-    mov_avg = np.cumsum(list, dtype=float)
-    mov_avg[n:] = mov_avg[n:] - mov_avg[:-n]
-    mov_avg = mov_avg[n - 1:] / n
-    mov_avg = np.insert(mov_avg, 0, int(n / 2) * [None])
-    return mov_avg
-
-
-def plot_returns(returns):
-    returns = np.array(returns) * score_normalization
-    # plt.plot(returns, label="Raw scores")
-
-    # Window sizes for moving average
-    w1 = 100
-    w2 = 500
-    w3 = 2000
-
-    if len(returns) > w1:
-        mov_avg_ret = get_moving_avg(returns, w1)
-        plt.plot(mov_avg_ret, label="Moving average %d" % w1)
-
-    if len(returns) > w2:
-        mov_avg_ret = get_moving_avg(returns, w2)
-        plt.plot(mov_avg_ret, label="Moving average %d" % w2)
-
-    if len(returns) > w3:
-        mov_avg_ret = get_moving_avg(returns, w3)
-        plt.plot(mov_avg_ret, label="Moving average %d" % w3)
-
-    plt.title("Scores gathered so far")
-    plt.xlabel("Episode")
-    plt.ylabel("Score")
-    plt.legend()
-    plt.show()
-
-
-def plot_state(state):
-    # De-normalize state into image
-    state = np.reshape(state, (124, 124, 3))
-    image = (state * 255).astype(np.int)
-
-    # Plot it
-    plt.imshow(image)
-    plt.show()
-
-
-def angle_to_vector(alpha):
-    rad_shot_angle = np.deg2rad(alpha)
-
-    dx = - np.sin(rad_shot_angle) * 80
-    dy = np.cos(rad_shot_angle) * 80
-
-    return int(dx), int(dy)
-
-
-def action_to_params(action):
-    """Converts a given action index into the corresponding angle and tap time."""
-
-    # Convert the action index into index pair, indicating angle and tap_time
-    action = np.unravel_index(action, (angle_res, tap_time_res))
-
-    # Formula parameters, TODO: to be tuned
-    c = 3.6
-    d = 1.3
-
-    # Retrieve shot angle alpha
-    k = action[0] / angle_res
-    alpha = ((1 + 0.5 * c) * k - 3 / 2 * c * k ** 2 + c * k ** 3) ** d * (180 - phi - psi) + phi
-
-    # Convert angle into vector
-    dx, dy = angle_to_vector(alpha)
-
-    # Retrieve tap time
-    t = action[1]
-    tap_time = int(t / 10 * max_t)
-
-    print("Shooting with: alpha = %d °, tap time = %d ms" % (alpha, tap_time))
-
-    return dx, dy, tap_time
+from src.utils.utils import *
 
 
 class ClientDQNAgent(Thread):
-    """Deep Q-Network (DQN) agent"""
+    """Deep Q-Network (DQN) agent for playing Angry Birds"""
 
-    def __init__(self, start_level=1, sim_speed=1, optimizer=tf.optimizers.Adam(learning_rate=learning_rate),
-                 gamma=0.9):
+    def __init__(self, start_level=1, sim_speed=1, learning_rate=0.00001, gamma=0.9):
         super().__init__()
 
         with open('./src/client/server_client_config.json', 'r') as config:
@@ -139,13 +35,22 @@ class ClientDQNAgent(Thread):
         except socket.error as e:
             print("Error in client-server communication: " + str(e))
 
-        # General model parameters
-        self.solved = []
+        # General
         self.id = 28888
 
         # Game parameters
         self.current_level = start_level
-        self.sim_speed = sim_speed
+        self.sim_speed = sim_speed  # Simulation speed for Science Birds (max. 50)
+
+        # Action space parameters
+        self.angle_res = 20  # angle resolution: the number of possible (discretized) shot angles
+        self.tap_time_res = 10  # tap time resolution: the number of possible tap times
+        self.max_t = 4000  # maximum tap time
+        self.phi = 10  # dead shot angle bottom
+        self.psi = 40  # dead shot angle top
+
+        # State space parameter
+        self.state_x_dim = 124
 
         # Discount factor
         self.gamma = gamma
@@ -154,8 +59,13 @@ class ClientDQNAgent(Thread):
         self.epsilon = 1
         self.anneal = 0.9999
 
-        # Training optimizer
-        self._optimizer = optimizer
+        # Training optimizer and parameters
+        self._optimizer = tf.optimizers.Adam(learning_rate=learning_rate)
+        self.num_episodes = 100000
+        self.train_period = 10  # number of levels between each training of the online network
+        self.sync_period = 200  # number of levels between each synchronization of online and target network
+        self.grace_factor = 1  # reward function modifier, giving X % points on failed levels
+        self.score_normalization = 10000
 
         # Initialize the architecture of the acting part of the DQN, theta
         self.online_network = self._build_compile_model()
@@ -169,7 +79,7 @@ class ClientDQNAgent(Thread):
         model = keras.Sequential(
             [
                 tf.keras.layers.Conv2D(32, (8, 8), strides=4, kernel_initializer=VarianceScaling(scale=2.),
-                                       activation='relu', use_bias=False, input_shape=(state_x_dim, state_x_dim, 3)),
+                                       activation='relu', use_bias=False, input_shape=(self.state_x_dim, self.state_x_dim, 3)),
                 # tf.keras.layers.Dropout(0.25),
 
                 tf.keras.layers.Conv2D(64, (4, 4), strides=2, kernel_initializer=VarianceScaling(scale=2.),
@@ -187,61 +97,13 @@ class ClientDQNAgent(Thread):
 
                 tf.keras.layers.Dense(100, activation='relu'),
 
-                tf.keras.layers.Dense(angle_res * tap_time_res, activation='linear')
+                tf.keras.layers.Dense(self.angle_res * self.tap_time_res, activation='linear')
             ]
         )
 
         model.compile(loss='huber_loss', optimizer=self._optimizer)
 
         return model
-
-    def sample_state(self, cycle_time=0.5):
-        """
-        Sample a screenshot from the observer agent. This method can be run in a different thread.
-        NOTE: Use cycle_time of > 0.01, otherwise it may cause a lag in Science Birds game
-              due to the calculation of groundtruth data.
-        """
-
-        while True:
-            vision, _ = self.observer_ar.get_ground_truth_with_screenshot()
-            time.sleep(cycle_time)
-
-    def get_next_level(self):
-        """Obtain the number of the next level to play."""
-        return self.current_level + 1
-
-    def check_my_score(self):
-        """Get all level scores and mark levels with positive score as solved."""
-        print("My score:")
-
-        scores = self.ar.get_all_level_scores()
-        for level, score in enumerate(scores):
-            # If score is positive, mark level as solved and print that score
-            if score > 0:
-                self.solved[level] = 1
-                print("Level ", level + 1, ":", score)
-
-        return scores
-
-    def update_no_of_levels(self):
-        """
-        Checks if the number of levels has changed in the game. (Why do we need that?)
-        If yes, the list of solved levels is adjusted to the new number of levels.
-        """
-
-        n_levels = self.ar.get_number_of_levels()
-
-        # if number of levels has changed, adjust the list of solved levels to the new number
-        if n_levels > len(self.solved):
-            for n in range(len(self.solved), n_levels):
-                self.solved.append(0)
-
-        if n_levels < len(self.solved):
-            self.solved = self.solved[:n_levels]
-
-        print('Number of levels: ' + str(n_levels))
-
-        return n_levels
 
     def run(self):
         """The agent's main running routine."""
@@ -267,7 +129,7 @@ class ClientDQNAgent(Thread):
         # Initialize return list (list of final scores for each level played)
         returns = []
 
-        for i in range(num_episodes):
+        for i in range(self.num_episodes):
             print("\nEpisode %d, Level %d, epsilon = %f" % (i + 1, self.ar.get_current_level(), self.epsilon))
 
             # Observations during the current level: list of (s, a, r, s', t) tuples
@@ -320,19 +182,19 @@ class ClientDQNAgent(Thread):
             # be zero, but we give some "grace" points, so the network can learn even if it constantly looses.
             if appl_state == GameState.LOST:
                 # Grace points on return
-                ret *= grace_factor
+                ret *= self.grace_factor
 
                 # Grace points on all the rewards given during this level
-                obs[:, 2] *= grace_factor
+                obs[:, 2] *= self.grace_factor
 
-            print("Got level score %d" % (ret * score_normalization))
+            print("Got level score %d" % (ret * self.score_normalization))
 
             # Save the return
             returns += [ret]
 
-            # Every X episodes, plot the return graph
-            if (i + 1) % 10 == 0:
-                plot_returns(returns)
+            # Every X episodes, plot the score graph
+            if (i + 1) % 200 == 0:
+                plot_scores(np.array(returns) * self.score_normalization)
 
             # Append observations to experience buffer
             experience = np.append(experience, obs, axis=0)
@@ -341,13 +203,13 @@ class ClientDQNAgent(Thread):
             self.load_next_level(appl_state)
 
             # Train every train_period levels
-            if (i + 1) % train_period == 0:
+            if (i + 1) % self.train_period == 0:
                 # Update network weights to fit the experience
                 print("\nLearning from experience...")
                 self.update(experience)
 
             # Synchronize target and online network every sync_period levels
-            if (i + 1) % sync_period == 0:
+            if (i + 1) % self.sync_period == 0:
                 self.target_network = self.online_network
 
             # Cool down: reduce epsilon to reduce randomness
@@ -395,8 +257,7 @@ class ClientDQNAgent(Thread):
     def plan(self, state):
         """
         Given a state of the game, the deep Q-learner NN is used to predict a good shot.
-        :return: dx, dy:
-        tap_time:
+        :return: action, consisting of an index, corresponding to some shot parameters
         """
 
         # Obtain action-value pairs, Q(s,a)
@@ -408,17 +269,20 @@ class ClientDQNAgent(Thread):
             action = q_vals.argmax()
         else:
             # Choose action by random
-            action = np.random.randint(angle_res * tap_time_res)
+            action = np.random.randint(self.angle_res * self.tap_time_res)
 
-        print("Expected level score:", int(np.amax(q_vals) * score_normalization))
+        print("Expected level score:", int(np.amax(q_vals) * self.score_normalization))
 
         return action
 
     def shoot(self, action):
         """Performs a shot and observes and returns the consequences."""
+        # Sling reference point coordinates TODO: Do these coordinates change?
+        sling_ref_point_x = 191
+        sling_ref_point_y = 344
 
         # Convert action index into aim vector and tap time
-        dx, dy, tap_time = action_to_params(action)
+        dx, dy, tap_time = self.action_to_params(action)
 
         # Perform the shot
         # print("Shooting with dx = %d, dy = %d, tap_time = %d" % (dx, dy, tap_time))
@@ -428,12 +292,37 @@ class ClientDQNAgent(Thread):
         env_state = self.get_state()
 
         # Obtain in-game score, normalized
-        score = self.ar.get_current_score() / score_normalization
+        score = self.ar.get_current_score() / self.score_normalization
 
         # Get the application state and return it
         appl_state = self.ar.get_game_state()
 
         return env_state, score, appl_state
+
+    def action_to_params(self, action):
+        """Converts a given action index into corresponding dx, dy, and tap time."""
+
+        # Convert the action index into index pair, indicating angle and tap_time
+        action = np.unravel_index(action, (self.angle_res, self.tap_time_res))
+
+        # Formula parameters, TODO: to be tuned
+        c = 3.6
+        d = 1.3
+
+        # Retrieve shot angle alpha
+        k = action[0] / self.angle_res
+        alpha = ((1 + 0.5 * c) * k - 3 / 2 * c * k ** 2 + c * k ** 3) ** d * (180 - self.phi - self.psi) + self.phi
+
+        # Convert angle into vector
+        dx, dy = angle_to_vector(alpha)
+
+        # Retrieve tap time
+        t = action[1]
+        tap_time = int(t / 10 * self.max_t)
+
+        print("Shooting with: alpha = %d °, tap time = %d ms" % (alpha, tap_time))
+
+        return dx, dy, tap_time
 
     def get_state(self):
         """Fetches the current game screenshot and turns it into a cropped, scaled and normalized pixel matrix."""
@@ -446,7 +335,7 @@ class ClientDQNAgent(Thread):
         crop = screenshot[75:400, 40:]
 
         # Rescale the image into a (smaller) square
-        scaled = cv2.resize(crop, (state_x_dim, state_x_dim))
+        scaled = cv2.resize(crop, (self.state_x_dim, self.state_x_dim))
 
         # Normalize the scaled and cropped image
         state = np.expand_dims(scaled.astype(np.float32) / 255, axis=0)
