@@ -1,7 +1,5 @@
 import json
 import socket
-import pickle
-import bz2
 
 import cv2
 from threading import Thread
@@ -11,13 +9,14 @@ from tensorflow.keras.initializers import VarianceScaling
 from src.client.agent_client import AgentClient, GameState
 from src.utils.utils import *
 from src.utils.Vision import Vision
+from src.utils.ReplayMemory import ReplayMemory
 
 
 class ClientDQNAgent(Thread):
     """Deep Q-Network (DQN) agent for playing Angry Birds"""
 
     def __init__(self, start_level=1, num_episodes=100000, sim_speed=1, learning_rate=0.0001, replay_period=10,
-                 sync_period=200, gamma=0.9, epsilon=1, anneal=0.9999, minibatch=32):
+                 sync_period=200, gamma=0.99, epsilon=1, anneal=0.9999, minibatch=32):
         super().__init__()
 
         with open('./src/client/server_client_config.json', 'r') as config:
@@ -82,9 +81,8 @@ class ClientDQNAgent(Thread):
         # Initialize the architecture of the learning part of the DQN (identical to above), theta-
         self.target_network = self.online_network
 
-        # Export the experiences to a file
-        self.experience_path = "./experiences.bz2"
-        self.current_episode_length = 0
+        # Initialize the memory where all the experience will be memorized
+        self.memory = ReplayMemory(minibatch=minibatch, override=False)
 
         print('DQN agent initialized.')
 
@@ -136,9 +134,6 @@ class ClientDQNAgent(Thread):
         print("Training finished successfully!")
 
     def play(self):
-        # Initialize experience buffer, containing all (s, a, r, s', t) tuples experienced so far
-        experience = np.empty((0, 5))
-
         # Initialize priority list, each transition in experience has a corresponding priority
         # for a more effective experience replay during learning
         priorities = []
@@ -148,7 +143,6 @@ class ClientDQNAgent(Thread):
 
         for i in range(self.num_episodes):
             print("\nEpisode %d, Level %d, epsilon = %f" % (i + 1, self.ar.get_current_level(), self.epsilon))
-
 
             # Observations during the current level: list of (s, a, r, s', t) tuples
             obs = []
@@ -184,13 +178,14 @@ class ClientDQNAgent(Thread):
                 # Observe if this level was terminated
                 terminal = not appl_state == GameState.PLAYING
 
-                # Get and save priority for this transition
-                priorities += [np.max(priorities, initial=1)]
+                # Calculate initial priority for this transition
+                priority = np.max(self.memory.experience[:, -1], initial=1)
 
                 # Save experienced transition (s, a, r, s', t)
-                obs += [(env_state, action, reward, next_env_state, terminal)]
+                obs += [(env_state, action, reward, next_env_state, terminal, priority)]
+
                 # update length of current episode
-                self.current_episode_length += 1
+                self.memory.current_episode_length += 1
 
                 # Update return
                 ret = score
@@ -225,7 +220,7 @@ class ClientDQNAgent(Thread):
                 plot_scores(np.array(returns) * self.score_normalization)
 
             # Append observations to experience buffer
-            experience = np.append(experience, obs, axis=0)
+            self.memory.memorize(obs)
 
             # Load next level (in advance)
             self.load_next_level(appl_state)
@@ -234,7 +229,7 @@ class ClientDQNAgent(Thread):
             if (i + 1) % self.replay_period == 0:
                 # Update network weights to fit the experience
                 print("\nLearning from experience...")
-                self.learn(experience, priorities)
+                self.learn()
 
             # Synchronize target and online network every sync_period levels
             if (i + 1) % self.sync_period == 0:
@@ -243,29 +238,19 @@ class ClientDQNAgent(Thread):
             # Cool down: reduce epsilon to reduce randomness
             self.epsilon *= self.anneal
 
-    def learn(self, experience, priorities):
+    def learn(self):
         """Updates the online network's weights. This is the actual learning step of the agent."""
 
-        # Obtain number of experienced transitions
-        exp_len = experience.shape[0]
+        # Save (new) memory into file
+        self.memory.export_new_experience()
 
-        self.export_experience(experience)
-
-        # Obtain batch size
-        batch_size = np.min((exp_len, self.minibatch))
-
-        for j in range(self.minibatch):
-            # TODO: Sample transition depending on priorities
-            break
-
-        # Select a random batch from experience to train on, TODO: implement Expereince Replay
-        batch_ids = np.random.choice(exp_len, batch_size)
-        batch = experience[batch_ids]
+        # Obtain a list of useful transitions to learn on
+        batch = self.memory.recall()
 
         states = []
         targets = []
 
-        for state, action, reward, next_state, terminal in batch:
+        for state, action, reward, next_state, terminal, priority in batch:
 
             # Predict Q-value matrix for given state
             target = self.target_network.predict(state)
@@ -286,7 +271,7 @@ class ClientDQNAgent(Thread):
         targets = np.asarray(targets)
 
         # Update the online network's weights
-        self.online_network.fit(states, targets, epochs=1, verbose=0, batch_size=batch_size)
+        self.online_network.fit(states, targets, epochs=1, verbose=0, batch_size=self.minibatch)
 
     def plan(self, state):
         """
@@ -391,69 +376,6 @@ class ClientDQNAgent(Thread):
 
         self.ar.load_level(next_level)
 
-    def export_experience(self, experience):
-        """Exports the given experience data to a json file. For each level, the sequences of shots is saved.
-        Each shot consists of the initial state, the chosen action and the achieved reward."""
-        levels = []
-        current_level = []
-        num_shots = 0
-
-        for i in range(self.current_episode_length):
-            # i[0]: img i[1]: action i[2]: reward i[3]: img i[4]: termination
-            current_offset = -self.current_episode_length + i
-            current_level.append(experience[current_offset][0])
-            current_level.append(experience[current_offset][1])
-            current_level.append(experience[current_offset][2])
-            num_shots += 1
-            if experience[current_offset][4]:
-                levels.append(current_level)
-                current_level = []
-                num_shots = 0
-
-        # try to open the file with previous experiences, if not possible: create an empty experience list
-        try:
-            with bz2.open(self.experience_path, "rb") as f:
-                pre_levels = pickle.load(f)
-                print("loaded:", len(pre_levels), "levels")
-        except EOFError:
-            pre_levels = []
-        except FileNotFoundError:
-            pre_levels = []
-        pre_levels.extend(levels)
-        print("stored:", len(pre_levels), "levels")
-        with bz2.open(self.experience_path, "wb") as f:
-            pickle.dump(pre_levels, f)
-
-        # reset the current episode_length
-        self.current_episode_length = 0
-
-    def load_experience(self):
-        """Load the experience data from the compressed file and return it as a list of transitions.
-        Each transition consists of: initial state, action reward, next state, termination."""
-        with bz2.open(self.experience_path, "rb") as f:
-            levels = pickle.load(f)
-            print("loaded:", len(levels), "levels")
-
-        experience = np.empty((0, 5))
-
-        for l in levels:
-            for i in range(int(len(l) / 3)):
-                # add state, action, reward
-                obs = [l[i * 3], l[i * 3 + 1], l[i * 3 + 2]]
-                # check if the current transition is not the last transition
-                if (i * 3 + 3) < len(l):
-                    obs.append(l[i * 3 + 3])
-                    obs.append(False)
-                else:
-                    obs.append(None)
-                    obs.append(True)
-
-                # add the current observation to the total list
-                obs = np.array([obs])
-
-                experience = np.append(experience, obs, axis=0)
-
-        return experience
 
 if __name__ == "__main__":
     agent = ClientDQNAgent()
