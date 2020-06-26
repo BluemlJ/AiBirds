@@ -16,7 +16,7 @@ class ClientDQNAgent(Thread):
     """Deep Q-Network (DQN) agent for playing Angry Birds"""
 
     def __init__(self, start_level=1, num_episodes=100000, sim_speed=1, learning_rate=0.0001, replay_period=10,
-                 sync_period=200, gamma=0.99, epsilon=1, anneal=0.9999, minibatch=32):
+                 sync_period=500, gamma=0.99, epsilon=1, anneal=0.9999, minibatch=32):
         super().__init__()
 
         with open('./src/client/server_client_config.json', 'r') as config:
@@ -62,6 +62,10 @@ class ClientDQNAgent(Thread):
         # Discount factor
         self.gamma = gamma
 
+        # Prioritized Experience Replay parameters
+        self.alpha = 1
+        self.beta = 1
+
         # Parameters for annealing epsilon greedy policy
         self.epsilon = epsilon
         self.anneal = anneal
@@ -82,7 +86,7 @@ class ClientDQNAgent(Thread):
         self.target_network = self.online_network
 
         # Initialize the memory where all the experience will be memorized
-        self.memory = ReplayMemory(minibatch=minibatch, override=False)
+        self.memory = ReplayMemory(override=False)
 
         print('DQN agent initialized.')
 
@@ -134,10 +138,6 @@ class ClientDQNAgent(Thread):
         print("Training finished successfully!")
 
     def play(self):
-        # Initialize priority list, each transition in experience has a corresponding priority
-        # for a more effective experience replay during learning
-        priorities = []
-
         # Initialize return list (list of final scores for each level played)
         returns = []
 
@@ -149,8 +149,6 @@ class ClientDQNAgent(Thread):
 
             # Initialize current episode's return to 0
             ret = 0
-
-            # Initialize current episode length
 
             # Initialize variable to monitor the application's state
             appl_state = self.ar.get_game_state()
@@ -172,14 +170,11 @@ class ClientDQNAgent(Thread):
                 # Compute reward (to be the number of additional points gained with the last shot)
                 reward = score - ret
 
-                # Compute TD error (difference between expected and observed value)
-                td_err = score - val_estimate
-
                 # Observe if this level was terminated
                 terminal = not appl_state == GameState.PLAYING
 
                 # Calculate initial priority for this transition
-                priority = np.max(self.memory.experience[:, -1], initial=1)
+                priority = np.max(self.memory.experience[:, -1], initial=1.0)
 
                 # Save experienced transition (s, a, r, s', t)
                 obs += [(env_state, action, reward, next_env_state, terminal, priority)]
@@ -245,25 +240,48 @@ class ClientDQNAgent(Thread):
         self.memory.export_new_experience()
 
         # Obtain a list of useful transitions to learn on
-        batch = self.memory.recall()
+        batch_ids, probabilities = self.memory.recall(self.minibatch, self.alpha)
 
+        # Initialize sample weight, states and targets list
+        td_errs = []
         states = []
         targets = []
 
-        for state, action, reward, next_state, terminal, priority in batch:
+        # Obtain total number of experienced transitions
+        exp_len = self.memory.experience.shape[0]
+
+        # Compute importance-sampling weights and normalize
+        weights = (exp_len * probabilities[batch_ids]) ** (- self.beta)
+        weights /= np.max(weights)
+
+        for trans_id in batch_ids:
+            state, action, reward, next_state, terminal, priority = self.memory.experience[trans_id]
+
+            # Predict value and action for current state
+            pred_q = np.max(self.online_network.predict(state))
+
+            # Compute TD error (difference between expected and observed (target) return)
+            if terminal:
+                # If this is the last transition of the episode, take the direct difference
+                target_val = reward
+            else:
+                # Else, use predicted reward of next step
+                next_action = np.argmax(self.online_network.predict(next_state))
+                next_q = self.target_network.predict(next_state)[0][next_action]
+                target_val = reward + self.gamma * next_q
+
+            td_err = target_val - pred_q
+
+            td_errs += [td_err]
+
+            # Update transition priority
+            self.memory.experience[trans_id, 5] = np.abs(td_err)
 
             # Predict Q-value matrix for given state
             target = self.target_network.predict(state)
+            target[0][action] = target_val
 
-            # Refine Q-values with observed reward
-            if terminal:
-                # If this is the last step, take the reward plainly
-                target[0][action] = reward
-            else:
-                # Else, use reward of this step plus discounted expected return
-                t = self.target_network.predict(next_state)
-                target[0][action] = reward + self.gamma * np.amax(t)
-
+            # Construct training data
             states += [state[0]]
             targets += [target[0]]
 
@@ -271,7 +289,9 @@ class ClientDQNAgent(Thread):
         targets = np.asarray(targets)
 
         # Update the online network's weights
-        self.online_network.fit(states, targets, epochs=1, verbose=0, batch_size=self.minibatch)
+        self.online_network.fit(states, targets, epochs=1, verbose=0,
+                                batch_size=self.minibatch,
+                                sample_weight=np.multiply(weights, td_errs))
 
     def plan(self, state):
         """

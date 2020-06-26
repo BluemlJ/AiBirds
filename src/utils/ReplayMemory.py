@@ -28,7 +28,7 @@ class ReplayMemory:
     def memorize(self, observations):
         self.experience = np.append(self.experience, observations, axis=0)
 
-    def recall(self, num_transitions):
+    def recall(self, num_transitions, alpha):
         """Returns a batch of transition IDs, depending on the transitions' priorities.
         This is part of Prioritized Experience Replay."""
 
@@ -41,13 +41,16 @@ class ReplayMemory:
         # Obtain priorities
         priorities = np.array(self.experience[:, -1], dtype='float64')
 
+        # Take power of each element with alpha to adjust priorities
+        priorities = np.power(priorities, alpha)
+
         # Convert priorities into probabilities
         probabilities = priorities / np.sum(priorities)
 
         # Randomly select transitions with given priorities (used as probabilities)
         trans_ids = np.random.choice(range(exp_len), size=batch_size, p=probabilities)
 
-        return trans_ids
+        return trans_ids, probabilities
 
     def export_all_experience(self):
         """Exports the total experience data to a bzipped pickle file. For each level, the sequences of shots is saved.
