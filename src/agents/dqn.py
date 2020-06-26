@@ -7,12 +7,14 @@ from tensorflow import keras
 from tensorflow.keras.initializers import VarianceScaling
 from src.client.agent_client import AgentClient, GameState
 from src.utils.utils import *
+from src.utils.Vision import Vision
 
 
 class ClientDQNAgent(Thread):
     """Deep Q-Network (DQN) agent for playing Angry Birds"""
 
-    def __init__(self, start_level=1, sim_speed=1, learning_rate=0.00001, gamma=0.9):
+    def __init__(self, start_level=1, num_episodes=100000, sim_speed=1, learning_rate=0.0001, replay_period=10,
+                 sync_period=200, gamma=0.9, epsilon=1, anneal=0.9999, minibatch=32):
         super().__init__()
 
         with open('./src/client/server_client_config.json', 'r') as config:
@@ -42,6 +44,9 @@ class ClientDQNAgent(Thread):
         self.current_level = start_level
         self.sim_speed = sim_speed  # Simulation speed for Science Birds (max. 50)
 
+        # Vision for obtaining sling reference point
+        self.vision = Vision()
+
         # Action space parameters
         self.angle_res = 20  # angle resolution: the number of possible (discretized) shot angles
         self.tap_time_res = 10  # tap time resolution: the number of possible tap times
@@ -49,23 +54,24 @@ class ClientDQNAgent(Thread):
         self.phi = 10  # dead shot angle bottom
         self.psi = 40  # dead shot angle top
 
-        # State space parameter
-        self.state_x_dim = 124
+        # State space resolution (per dimension)
+        self.state_res_per_dim = 124
 
         # Discount factor
         self.gamma = gamma
 
         # Parameters for annealing epsilon greedy
-        self.epsilon = 1
-        self.anneal = 0.9999
+        self.epsilon = epsilon
+        self.anneal = anneal
 
         # Training optimizer and parameters
         self._optimizer = tf.optimizers.Adam(learning_rate=learning_rate)
-        self.num_episodes = 100000
-        self.train_period = 10  # number of levels between each training of the online network
-        self.sync_period = 200  # number of levels between each synchronization of online and target network
+        self.num_episodes = num_episodes
+        self.replay_period = replay_period  # number of levels between each training of the online network
+        self.sync_period = sync_period  # number of levels between each synchronization of online and target network
         self.grace_factor = 1  # reward function modifier, giving X % points on failed levels
         self.score_normalization = 10000
+        self.minibatch = minibatch
 
         # Initialize the architecture of the acting part of the DQN, theta
         self.online_network = self._build_compile_model()
@@ -79,7 +85,7 @@ class ClientDQNAgent(Thread):
         model = keras.Sequential(
             [
                 tf.keras.layers.Conv2D(32, (8, 8), strides=4, kernel_initializer=VarianceScaling(scale=2.),
-                                       activation='relu', use_bias=False, input_shape=(self.state_x_dim, self.state_x_dim, 3)),
+                                       activation='relu', use_bias=False, input_shape=(self.state_res_per_dim, self.state_res_per_dim, 3)),
                 # tf.keras.layers.Dropout(0.25),
 
                 tf.keras.layers.Conv2D(64, (4, 4), strides=2, kernel_initializer=VarianceScaling(scale=2.),
@@ -119,12 +125,16 @@ class ClientDQNAgent(Thread):
 
         # Train the network for num_episodes episodes
         print("Starting training...")
-        self.train()
+        self.play()
         print("Training finished successfully!")
 
-    def train(self):
+    def play(self):
         # Initialize experience buffer, containing all (s, a, r, s', t) tuples experienced so far
         experience = np.empty((0, 5))
+
+        # Initialize priority list, each transition in experience has a corresponding priority
+        # for a more effective experience replay during learning
+        priorities = []
 
         # Initialize return list (list of final scores for each level played)
         returns = []
@@ -149,8 +159,8 @@ class ClientDQNAgent(Thread):
                 # Plot the current state
                 # self.plot_state(env_state)
 
-                # Predict the next action to take, i.e. the best shot
-                action = self.plan(env_state)
+                # Predict the next action to take, i.e. the best shot, and get estimated value
+                action, val_estimate = self.plan(env_state)
 
                 # Perform shot, observe new environment state, level score and application state
                 next_env_state, score, appl_state = self.shoot(action)
@@ -158,10 +168,16 @@ class ClientDQNAgent(Thread):
                 # Compute reward (to be the number of additional points gained with the last shot)
                 reward = score - ret
 
+                # Compute TD error (difference between expected and observed value)
+                td_err = score - val_estimate
+
                 # Observe if this level was terminated
                 terminal = not appl_state == GameState.PLAYING
 
-                # Save new experience (s, a, r, s', t)
+                # Get and save priority for this transition
+                priorities += [np.max(priorities, initial=1)]
+
+                # Save experienced transition (s, a, r, s', t)
                 obs += [(env_state, action, reward, next_env_state, terminal)]
 
                 # Update return
@@ -203,10 +219,10 @@ class ClientDQNAgent(Thread):
             self.load_next_level(appl_state)
 
             # Train every train_period levels
-            if (i + 1) % self.train_period == 0:
+            if (i + 1) % self.replay_period == 0:
                 # Update network weights to fit the experience
                 print("\nLearning from experience...")
-                self.update(experience)
+                self.learn(experience)
 
             # Synchronize target and online network every sync_period levels
             if (i + 1) % self.sync_period == 0:
@@ -215,14 +231,14 @@ class ClientDQNAgent(Thread):
             # Cool down: reduce epsilon to reduce randomness
             self.epsilon *= self.anneal
 
-    def update(self, experience):
+    def learn(self, experience):
         """Updates the online network's weights. This is the actual learning step of the agent."""
 
         # Obtain number of experienced transitions
         exp_len = experience.shape[0]
 
         # Obtain batch size
-        batch_size = np.min((exp_len, 32))
+        batch_size = np.min((exp_len, self.minibatch))
 
         # Select a random batch from experience to train on, TODO: implement Expereince Replay
         batch_ids = np.random.choice(exp_len, batch_size)
@@ -271,22 +287,24 @@ class ClientDQNAgent(Thread):
             # Choose action by random
             action = np.random.randint(self.angle_res * self.tap_time_res)
 
-        print("Expected level score:", int(np.amax(q_vals) * self.score_normalization))
+        # Estimate the expected value for this level
+        val_estimate = np.amax(q_vals)
 
-        return action
+        print("Expected level score:", int(val_estimate * self.score_normalization))
+
+        return action, val_estimate
 
     def shoot(self, action):
         """Performs a shot and observes and returns the consequences."""
-        # Sling reference point coordinates TODO: Do these coordinates change?
-        sling_ref_point_x = 191
-        sling_ref_point_y = 344
+        # Get sling reference point coordinates
+        sling_x, sling_y = self.vision.get_sling_reference()
 
         # Convert action index into aim vector and tap time
         dx, dy, tap_time = self.action_to_params(action)
 
         # Perform the shot
         # print("Shooting with dx = %d, dy = %d, tap_time = %d" % (dx, dy, tap_time))
-        self.ar.shoot(sling_ref_point_x, sling_ref_point_y, dx, dy, 0, tap_time, isPolar=False)
+        self.ar.shoot(sling_x, sling_y, dx, dy, 0, tap_time, isPolar=False)
 
         # Get the environment state (cropped screenshot)
         env_state = self.get_state()
@@ -328,14 +346,17 @@ class ClientDQNAgent(Thread):
         """Fetches the current game screenshot and turns it into a cropped, scaled and normalized pixel matrix."""
 
         # Obtain game screenshot
-        screenshot, _ = self.ar.get_ground_truth_with_screenshot()
+        screenshot, ground_truth = self.ar.get_ground_truth_with_screenshot()
+
+        # Update Vision (to get an up-to-date sling reference point)
+        self.vision.update(screenshot, ground_truth)
 
         # Crop the image to reduce information overload.
         # The cropped image has then dimension (325, 800, 3).
         crop = screenshot[75:400, 40:]
 
         # Rescale the image into a (smaller) square
-        scaled = cv2.resize(crop, (self.state_x_dim, self.state_x_dim))
+        scaled = cv2.resize(crop, (self.state_res_per_dim, self.state_res_per_dim))
 
         # Normalize the scaled and cropped image
         state = np.expand_dims(scaled.astype(np.float32) / 255, axis=0)
