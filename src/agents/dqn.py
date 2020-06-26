@@ -50,7 +50,7 @@ class ClientDQNAgent(Thread):
         # Action space parameters
         self.angle_res = 20  # angle resolution: the number of possible (discretized) shot angles
         self.tap_time_res = 10  # tap time resolution: the number of possible tap times
-        self.max_t = 4000  # maximum tap time
+        self.max_t = 4000  # maximum tap time (in ms)
         self.phi = 10  # dead shot angle bottom
         self.psi = 40  # dead shot angle top
 
@@ -60,7 +60,7 @@ class ClientDQNAgent(Thread):
         # Discount factor
         self.gamma = gamma
 
-        # Parameters for annealing epsilon greedy
+        # Parameters for annealing epsilon greedy policy
         self.epsilon = epsilon
         self.anneal = anneal
 
@@ -222,7 +222,7 @@ class ClientDQNAgent(Thread):
             if (i + 1) % self.replay_period == 0:
                 # Update network weights to fit the experience
                 print("\nLearning from experience...")
-                self.learn(experience)
+                self.learn(experience, priorities)
 
             # Synchronize target and online network every sync_period levels
             if (i + 1) % self.sync_period == 0:
@@ -231,7 +231,7 @@ class ClientDQNAgent(Thread):
             # Cool down: reduce epsilon to reduce randomness
             self.epsilon *= self.anneal
 
-    def learn(self, experience):
+    def learn(self, experience, priorities):
         """Updates the online network's weights. This is the actual learning step of the agent."""
 
         # Obtain number of experienced transitions
@@ -239,6 +239,10 @@ class ClientDQNAgent(Thread):
 
         # Obtain batch size
         batch_size = np.min((exp_len, self.minibatch))
+
+        for j in range(self.minibatch):
+            # TODO: Sample transition depending on priorities
+            break
 
         # Select a random batch from experience to train on, TODO: implement Expereince Replay
         batch_ids = np.random.choice(exp_len, batch_size)
