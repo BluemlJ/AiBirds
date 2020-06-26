@@ -1,5 +1,8 @@
 import json
 import socket
+import pickle
+import bz2
+
 import cv2
 from threading import Thread
 import tensorflow as tf
@@ -73,6 +76,10 @@ class ClientDQNAgent(Thread):
         # Initialize the architecture of the learning part of the DQN (identical to above), theta-
         self.target_network = self.online_network
 
+        # Export the experiences to a file
+        self.experience_path = "./experiences.bz2"
+        self.current_episode_length = 0
+
         print('DQN agent initialized.')
 
     def _build_compile_model(self):
@@ -132,11 +139,14 @@ class ClientDQNAgent(Thread):
         for i in range(self.num_episodes):
             print("\nEpisode %d, Level %d, epsilon = %f" % (i + 1, self.ar.get_current_level(), self.epsilon))
 
+
             # Observations during the current level: list of (s, a, r, s', t) tuples
             obs = []
 
             # Initialize current episode's return to 0
             ret = 0
+
+            # Initialize current episode length
 
             # Initialize variable to monitor the application's state
             appl_state = self.ar.get_game_state()
@@ -163,6 +173,9 @@ class ClientDQNAgent(Thread):
 
                 # Save new experience (s, a, r, s', t)
                 obs += [(env_state, action, reward, next_env_state, terminal)]
+                # update length of current episode
+                self.current_episode_length += 1
+                print("episode length =============================", self.current_episode_length)
 
                 # Update return
                 ret = score
@@ -220,6 +233,8 @@ class ClientDQNAgent(Thread):
 
         # Obtain number of experienced transitions
         exp_len = experience.shape[0]
+
+        self.export_experience(experience)
 
         # Obtain batch size
         batch_size = np.min((exp_len, 32))
@@ -351,6 +366,42 @@ class ClientDQNAgent(Thread):
         self.current_level = next_level
 
         self.ar.load_level(next_level)
+
+    def export_experience(self, experience):
+        """Exports the given experience data to a json file. For each level, the sequences of shots is saved.
+        Each shot consists of the initial state, the chosen action and the achieved reward."""
+        levels = []
+        current_level = {}
+        num_shots = 0
+
+        for i in range(self.current_episode_length):
+            # i[0]: img i[1]: action i[2]: reward i[3]: img i[4]: termination
+            current_offset = -self.current_episode_length + i
+            current_level["s" + str(num_shots)] = experience[current_offset][0]
+            current_level["a" + str(num_shots)] = experience[current_offset][1]
+            current_level["r" + str(num_shots)] = experience[current_offset][2]
+            num_shots += 1
+            if experience[current_offset][4]:
+                levels.append(current_level)
+                current_level = {}
+                num_shots = 0
+
+        # try to open the file with previous experiences, if not possible: create an empty experience list
+        try:
+            with bz2.open(self.experience_path, "rb") as f:
+                pre_levels = pickle.load(f)
+                print("loaded:", len(pre_levels), "levels")
+        except EOFError:
+            pre_levels = []
+        except FileNotFoundError:
+            pre_levels = []
+        pre_levels.extend(levels)
+        print("stored:", len(pre_levels), "levels")
+        with bz2.open(self.experience_path, "wb") as f:
+            pickle.dump(pre_levels, f)
+
+        # reset the current episode_length
+        self.current_episode_length = 0
 
 
 if __name__ == "__main__":
