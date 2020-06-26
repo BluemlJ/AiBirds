@@ -391,19 +391,19 @@ class ClientDQNAgent(Thread):
         """Exports the given experience data to a json file. For each level, the sequences of shots is saved.
         Each shot consists of the initial state, the chosen action and the achieved reward."""
         levels = []
-        current_level = {}
+        current_level = []
         num_shots = 0
 
         for i in range(self.current_episode_length):
             # i[0]: img i[1]: action i[2]: reward i[3]: img i[4]: termination
             current_offset = -self.current_episode_length + i
-            current_level["s" + str(num_shots)] = experience[current_offset][0]
-            current_level["a" + str(num_shots)] = experience[current_offset][1]
-            current_level["r" + str(num_shots)] = experience[current_offset][2]
+            current_level.append(experience[current_offset][0])
+            current_level.append(experience[current_offset][1])
+            current_level.append(experience[current_offset][2])
             num_shots += 1
             if experience[current_offset][4]:
                 levels.append(current_level)
-                current_level = {}
+                current_level = []
                 num_shots = 0
 
         # try to open the file with previous experiences, if not possible: create an empty experience list
@@ -423,6 +423,33 @@ class ClientDQNAgent(Thread):
         # reset the current episode_length
         self.current_episode_length = 0
 
+    def load_experience(self):
+        """Load the experience data from the compressed file and return it as a list of transitions.
+        Each transition consists of: initial state, action reward, next state, termination."""
+        with bz2.open(self.experience_path, "rb") as f:
+            levels = pickle.load(f)
+            print("loaded:", len(levels), "levels")
+
+        experience = np.empty((0, 5))
+
+        for l in levels:
+            for i in range(int(len(l) / 3)):
+                # add state, action, reward
+                obs = [l[i * 3], l[i * 3 + 1], l[i * 3 + 2]]
+                # check if the current transition is not the last transition
+                if (i * 3 + 3) < len(l):
+                    obs.append(l[i * 3 + 3])
+                    obs.append(False)
+                else:
+                    obs.append(None)
+                    obs.append(True)
+
+                # add the current observation to the total list
+                obs = np.array([obs])
+
+                experience = np.append(experience, obs, axis=0)
+
+        return experience
 
 if __name__ == "__main__":
     agent = ClientDQNAgent()
