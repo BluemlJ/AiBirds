@@ -191,7 +191,6 @@ class ClientDQNAgent(Thread):
                 obs += [(env_state, action, reward, next_env_state, terminal)]
                 # update length of current episode
                 self.current_episode_length += 1
-                print("episode length =============================", self.current_episode_length)
 
                 # Update return
                 ret = score
