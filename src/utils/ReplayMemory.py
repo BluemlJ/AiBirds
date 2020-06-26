@@ -5,7 +5,7 @@ import os
 
 
 class ReplayMemory:
-    def __init__(self, minibatch=32, experience_path="data/experiences.bz2", override=False):
+    def __init__(self, experience_path="data/experiences.bz2", override=False):
         # Initialize the experience list, a list of transitions
         # containing all (s, a, r, s', t) tuples experienced so far
         self.experience = np.empty((0, 6))
@@ -15,8 +15,9 @@ class ReplayMemory:
 
         # Load existing experience if override is false (and experience exists)
         if not override:
-            print("Reloading existing experience.")
-            self.load_experience()
+            if os.path.exists(experience_path):
+                print("Reloading existing experience.")
+                self.load_experience()
         else:
             print("Overriding previously saved experience.")
             if os.path.exists(experience_path):
@@ -24,30 +25,29 @@ class ReplayMemory:
 
         self.current_episode_length = 0
 
-        # Number of transitions to return when recall is called
-        self.minibatch = minibatch
-
     def memorize(self, observations):
         self.experience = np.append(self.experience, observations, axis=0)
 
-    def recall(self):
-        """Returns a batch of useful transitions. This uses Prioritized Experience Replay."""
+    def recall(self, num_transitions):
+        """Returns a batch of transition IDs, depending on the transitions' priorities.
+        This is part of Prioritized Experience Replay."""
 
         # Obtain number of experienced transitions
         exp_len = self.experience.shape[0]
 
         # Obtain batch size
-        batch_size = np.min((exp_len, self.minibatch))
+        batch_size = np.min((exp_len, num_transitions))
 
-        for j in range(self.minibatch):
-            # TODO: Sample transition depending on priorities
-            break
+        # Obtain priorities
+        priorities = np.array(self.experience[:, -1], dtype='float64')
 
-        # Select a random batch from experience to train on, TODO: implement Expereince Replay
-        batch_ids = np.random.choice(exp_len, batch_size)
-        batch = self.experience[batch_ids]
+        # Convert priorities into probabilities
+        probabilities = priorities / np.sum(priorities)
 
-        return batch
+        # Randomly select transitions with given priorities (used as probabilities)
+        trans_ids = np.random.choice(range(exp_len), size=batch_size, p=probabilities)
+
+        return trans_ids
 
     def export_all_experience(self):
         """Exports the total experience data to a bzipped pickle file. For each level, the sequences of shots is saved.
