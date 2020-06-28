@@ -433,10 +433,6 @@ class ClientDQNAgent(Thread):
 
         self.ar.load_level(next_level)
 
-    def lambda_out_shape(input_shape):
-        shape = list(input_shape)
-        shape[-1] = 1
-        return tuple(shape)
 
 if __name__ == "__main__":
     agent = ClientDQNAgent()
