@@ -123,7 +123,7 @@ class ClientDQNAgent(Thread):
         """
 
         input_frame=Input(shape=(self.state_res_per_dim, self.state_res_per_dim, 3))
-        #gaction_one_hot = Input(shape=(self.angle_res * self.tap_time_res,))
+        #action_one_hot = Input(shape=(self.angle_res * self.tap_time_res,))
         conv1 = Convolution2D(32, (8, 8), strides=4, kernel_initializer=VarianceScaling(scale=2.), activation='relu', use_bias=False)(input_frame)
         # tf.keras.layers.Dropout(0.25),
 
@@ -143,7 +143,7 @@ class ClientDQNAgent(Thread):
 	
         if self.dueling:
             # Dueling Network
-            # Q = Value of state + (Value of Action - Mean of all action value)
+            # Q = Average of both networks
             hidden_feature_2 = Dense(512,activation='relu')(flat_feature)
             state_value_prediction = Dense(1)(hidden_feature_2)
             q_value_prediction = tf.keras.layers.Average()([q_value_prediction, state_value_prediction])
@@ -153,8 +153,8 @@ class ClientDQNAgent(Thread):
         model = tf.keras.Model(inputs=[input_frame], outputs=[q_value_prediction])
         model.compile(loss='huber_loss', optimizer=self._optimizer)
 
-        model.summary()
-        tf.keras.utils.plot_model(model, to_file='model_plot.png', show_shapes=True, show_layer_names=True)
+        #model.summary()
+        #tf.keras.utils.plot_model(model, to_file='model_plot.png', show_shapes=True, show_layer_names=True)
         return model
 
     def run(self):
