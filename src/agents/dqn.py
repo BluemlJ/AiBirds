@@ -5,6 +5,7 @@ import tensorflow as tf
 
 from threading import Thread
 from tensorflow import keras
+from tensorflow.keras.layers import Input, Convolution2D, Flatten, Dense, LeakyReLU
 from tensorflow.keras.initializers import VarianceScaling
 from src.client.agent_client import AgentClient, GameState
 from src.utils.utils import *
@@ -59,6 +60,9 @@ class ClientDQNAgent(Thread):
         # State space resolution (per dimension)
         self.state_res_per_dim = 124
 
+        # To use the dueling feature
+        self.dueling = True
+
         # Discount factor
         self.gamma = gamma
 
@@ -95,6 +99,7 @@ class ClientDQNAgent(Thread):
         print('DQN agent initialized.')
 
     def _build_compile_model(self):
+        """
         model = keras.Sequential(
             [
                 tf.keras.layers.Conv2D(32, (8, 8), strides=4, kernel_initializer=VarianceScaling(scale=2.),
@@ -120,9 +125,41 @@ class ClientDQNAgent(Thread):
                 tf.keras.layers.Dense(self.angle_res * self.tap_time_res, activation='linear')
             ]
         )
+        """
 
+        input_frame=Input(shape=(self.state_res_per_dim, self.state_res_per_dim, 3))
+        #action_one_hot = Input(shape=(self.angle_res * self.tap_time_res,))
+        conv1 = Convolution2D(32, (8, 8), strides=4, kernel_initializer=VarianceScaling(scale=2.), activation='relu', use_bias=False)(input_frame)
+        # tf.keras.layers.Dropout(0.25),
+
+        conv2 = Convolution2D(64, (4, 4), strides=2, kernel_initializer=VarianceScaling(scale=2.), activation='relu', use_bias=False)(conv1)
+        # tf.keras.layers.Dropout(0.5),
+
+        conv3 = Convolution2D(64, (3, 3), strides=1, kernel_initializer=VarianceScaling(scale=2.), activation='relu', use_bias=False)(conv2)
+        # tf.keras.layers.Dropout(0.5),
+
+        conv4 = Convolution2D(1024, (7, 7), strides=1, kernel_initializer=VarianceScaling(scale=2.), activation='relu', use_bias=False)(conv3)
+        # tf.keras.layers.Dropout(0.5),
+        flat_feature = tf.keras.layers.Flatten()(conv4)
+        hidden_feature = tf.keras.layers.Dense(100, activation='relu')(flat_feature)
+        lrelu_feature = LeakyReLU()(hidden_feature)
+        q_value_prediction = Dense(self.angle_res * self.tap_time_res, )(lrelu_feature)
+
+
+        if self.dueling:
+            # Dueling Network
+            # Q = Average of both networks
+            hidden_feature_2 = Dense(512,activation='relu')(flat_feature)
+            state_value_prediction = Dense(1)(hidden_feature_2)
+            q_value_prediction = tf.keras.layers.Average()([q_value_prediction, state_value_prediction])
+
+
+
+        model = tf.keras.Model(inputs=[input_frame], outputs=[q_value_prediction])
         model.compile(loss='huber_loss', optimizer=self._optimizer)
 
+        #model.summary()
+        #tf.keras.utils.plot_model(model, to_file='model_plot.png', show_shapes=True, show_layer_names=True)
         return model
 
     def run(self):
