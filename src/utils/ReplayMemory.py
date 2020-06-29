@@ -91,31 +91,35 @@ class ReplayMemory:
                 current_level = []
                 num_shots = 0
 
-        # try to open the file with previous experiences, if not possible: create an empty experience list
-        try:
-            with bz2.open(self.experience_path, "rb") as f:
-                pre_levels = pickle.load(f)
-                print("Loaded:", len(pre_levels), "levels.")
-        except EOFError:
-            pre_levels = []
-        except FileNotFoundError:
-            pre_levels = []
-
-        pre_levels.extend(levels)
-
-        with bz2.open(self.experience_path, "wb") as f:
-            pickle.dump(pre_levels, f)
-        print("Stored", len(pre_levels), "levels.")
+        # append the experience of the new levels to the experience file
+        with bz2.open(self.experience_path, "ab") as f:
+            _ = [pickle.dump(level, f) for level in levels]
+        print("Stored", len(levels), "levels.")
 
         # reset the current episode_length
         self.current_episode_length = 0
 
-    def load_experience(self):
+    def load_experience(self, num_of_levels = -1):
         """Load the experience data from the compressed file and return it as a list of transitions.
-        Each transition consists of: initial state, action reward, next state, termination."""
+        Each transition consists of: initial state, action reward, next state, termination.
+        Loads the first num_of_levels from the file. If num_of_levels = -1, all levels are loaded."""
+
+        if num_of_levels == -1:
+            print("Try to load all levels.")
+            num_of_levels = 200000
+        else:
+            print("Try to load", num_of_levels, "levels.")
+
         with bz2.open(self.experience_path, "rb") as f:
-            levels = pickle.load(f)
-            print("Loaded", len(levels), "levels.")
+            levels = []
+            for i in range(num_of_levels):
+                if (i % 1000) == 0:
+                    print("Loaded", i, "levels.")
+                try:
+                    levels.append(pickle.load(f))
+                except EOFError:
+                    break
+            print("Finished loading. Loaded", len(levels), "levels in total.")
 
         experience = np.empty((0, 6))
 
