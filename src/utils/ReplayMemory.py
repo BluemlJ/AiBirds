@@ -7,7 +7,7 @@ import os
 class ReplayMemory:
     def __init__(self, experience_path="data/experiences.bz2", override=False):
         # Initialize the experience list, a list of transitions
-        # containing all (s, a, r, s', t) tuples experienced so far
+        # containing all (s, a, r, s', t, p) tuples experienced so far
         self.experience = np.empty((0, 6))
 
         # Path string to location for saving the memory data
@@ -18,12 +18,15 @@ class ReplayMemory:
             if os.path.exists(experience_path):
                 print("Reloading existing experience.")
                 self.load_experience()
+            else:
+                print("No previous experience found at '%s'. A new experience dataset will be created." %
+                      experience_path)
         else:
-            print("Overriding previously saved experience.")
             if os.path.exists(experience_path):
+                print("Overriding previously saved experience.")
                 os.remove(experience_path)
 
-        self.current_episode_length = 0
+        self.num_unsaved_transitions = 0
 
     def memorize(self, observations):
         self.experience = np.append(self.experience, observations, axis=0)
@@ -52,6 +55,9 @@ class ReplayMemory:
 
         return trans_ids, probabilities
 
+    def get_length(self):
+        return self.experience.shape[0]
+
     def export_all_experience(self):
         """Exports the total experience data to a bzipped pickle file. For each level, the sequences of shots is saved.
                 Each shot consists of the initial state, the chosen action and the achieved reward."""
@@ -78,9 +84,9 @@ class ReplayMemory:
         current_level = []
         num_shots = 0
 
-        for i in range(self.current_episode_length):
+        for i in range(self.num_unsaved_transitions):
             # i[0]: img, i[1]: action, i[2]: reward, i[3]: img, i[4]: termination, i[5]: termination
-            current_offset = -self.current_episode_length + i
+            current_offset = -self.num_unsaved_transitions + i
             current_level.append(self.experience[current_offset][0])
             current_level.append(self.experience[current_offset][1])
             current_level.append(self.experience[current_offset][2])
@@ -108,7 +114,7 @@ class ReplayMemory:
         print("Stored", len(pre_levels), "levels.")
 
         # reset the current episode_length
-        self.current_episode_length = 0
+        self.num_unsaved_transitions = 0
 
     def load_experience(self):
         """Load the experience data from the compressed file and return it as a list of transitions.
@@ -141,3 +147,6 @@ class ReplayMemory:
                 experience = np.append(experience, obs, axis=0)
 
         self.experience = experience
+
+    def reset_priorities(self):
+        self.experience[:, 5] = 1
