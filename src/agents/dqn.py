@@ -1,10 +1,11 @@
 import json
 import socket
-
 import cv2
-from threading import Thread
 import tensorflow as tf
+
+from threading import Thread
 from tensorflow import keras
+from tensorflow.keras.layers import Input, Convolution2D, Flatten, Dense, LeakyReLU
 from tensorflow.keras.initializers import VarianceScaling
 from src.client.agent_client import AgentClient, GameState
 from src.utils.utils import *
@@ -16,7 +17,7 @@ class ClientDQNAgent(Thread):
     """Deep Q-Network (DQN) agent for playing Angry Birds"""
 
     def __init__(self, start_level=1, num_episodes=100000, sim_speed=1, learning_rate=0.0001, replay_period=10,
-                 sync_period=500, gamma=0.99, epsilon=1, anneal=0.9999, minibatch=32):
+                 sync_period=1000, gamma=0.99, epsilon=1, anneal=0.9999, minibatch=32):
         super().__init__()
 
         with open('./src/client/server_client_config.json', 'r') as config:
@@ -59,30 +60,37 @@ class ClientDQNAgent(Thread):
         # State space resolution (per dimension)
         self.state_res_per_dim = 124
 
+        # To use the dueling feature
+        self.dueling = True
+
         # Discount factor
         self.gamma = gamma
 
         # Prioritized Experience Replay parameters
-        self.alpha = 1
-        self.beta = 1
+        self.alpha = 0.7  # the larger alpha the more prioritization is used
+        self.beta = 0.5  # ? TODO: implement annealing beta
 
         # Parameters for annealing epsilon greedy policy
-        self.epsilon = epsilon
+        self.epsilon = epsilon  # starting epsilon value
         self.anneal = anneal
 
         # Training optimizer and parameters
         self._optimizer = tf.optimizers.Adam(learning_rate=learning_rate)
         self.num_episodes = num_episodes
         self.replay_period = replay_period  # number of levels between each training of the online network
-        self.sync_period = sync_period  # number of levels between each synchronization of online and target network
-        self.grace_factor = 1  # reward function modifier, giving X % points on failed levels
+        self.grace_factor = 1  # reward function modifier, granting X % points on failed levels
         self.score_normalization = 10000
         self.minibatch = minibatch
 
-        # Initialize the architecture of the acting part of the DQN, theta
+        # Double Q-Learning
+        self.sync_period = sync_period  # number of levels between each synchronization of online and target network,
+        # the higher the number, the stronger Double Q-Learning and the less overestimation
+
+        # Initialize the architecture of the acting and learning part of the DQN (theta)
         self.online_network = self._build_compile_model()
 
-        # Initialize the architecture of the learning part of the DQN (identical to above), theta-
+        # Initialize the architecture of a shadowed (target) version of the DQN (theta-),
+        # which computes the values during learning
         self.target_network = self.online_network
 
         # Initialize the memory where all the experience will be memorized
@@ -91,10 +99,12 @@ class ClientDQNAgent(Thread):
         print('DQN agent initialized.')
 
     def _build_compile_model(self):
+        """
         model = keras.Sequential(
             [
                 tf.keras.layers.Conv2D(32, (8, 8), strides=4, kernel_initializer=VarianceScaling(scale=2.),
-                                       activation='relu', use_bias=False, input_shape=(self.state_res_per_dim, self.state_res_per_dim, 3)),
+                                       activation='relu', use_bias=False,
+                                       input_shape=(self.state_res_per_dim, self.state_res_per_dim, 3)),
                 # tf.keras.layers.Dropout(0.25),
 
                 tf.keras.layers.Conv2D(64, (4, 4), strides=2, kernel_initializer=VarianceScaling(scale=2.),
@@ -115,9 +125,41 @@ class ClientDQNAgent(Thread):
                 tf.keras.layers.Dense(self.angle_res * self.tap_time_res, activation='linear')
             ]
         )
+        """
 
+        input_frame=Input(shape=(self.state_res_per_dim, self.state_res_per_dim, 3))
+        #action_one_hot = Input(shape=(self.angle_res * self.tap_time_res,))
+        conv1 = Convolution2D(32, (8, 8), strides=4, kernel_initializer=VarianceScaling(scale=2.), activation='relu', use_bias=False)(input_frame)
+        # tf.keras.layers.Dropout(0.25),
+
+        conv2 = Convolution2D(64, (4, 4), strides=2, kernel_initializer=VarianceScaling(scale=2.), activation='relu', use_bias=False)(conv1)
+        # tf.keras.layers.Dropout(0.5),
+
+        conv3 = Convolution2D(64, (3, 3), strides=1, kernel_initializer=VarianceScaling(scale=2.), activation='relu', use_bias=False)(conv2)
+        # tf.keras.layers.Dropout(0.5),
+
+        conv4 = Convolution2D(1024, (7, 7), strides=1, kernel_initializer=VarianceScaling(scale=2.), activation='relu', use_bias=False)(conv3)
+        # tf.keras.layers.Dropout(0.5),
+        flat_feature = tf.keras.layers.Flatten()(conv4)
+        hidden_feature = tf.keras.layers.Dense(100, activation='relu')(flat_feature)
+        lrelu_feature = LeakyReLU()(hidden_feature)
+        q_value_prediction = Dense(self.angle_res * self.tap_time_res, )(lrelu_feature)
+
+
+        if self.dueling:
+            # Dueling Network
+            # Q = Average of both networks
+            hidden_feature_2 = Dense(512,activation='relu')(flat_feature)
+            state_value_prediction = Dense(1)(hidden_feature_2)
+            q_value_prediction = tf.keras.layers.Average()([q_value_prediction, state_value_prediction])
+
+
+
+        model = tf.keras.Model(inputs=[input_frame], outputs=[q_value_prediction])
         model.compile(loss='huber_loss', optimizer=self._optimizer)
 
+        #model.summary()
+        #tf.keras.utils.plot_model(model, to_file='model_plot.png', show_shapes=True, show_layer_names=True)
         return model
 
     def run(self):
@@ -133,12 +175,12 @@ class ClientDQNAgent(Thread):
         self.ar.load_level(self.current_level)
 
         # Train the network for num_episodes episodes
-        print("Starting training...")
+        print("Start playing...")
         self.play()
-        print("Training finished successfully!")
+        print("Playing finished successfully!")
 
     def play(self):
-        # Initialize return list (list of final scores for each level played)
+        # Initialize return list (list of normalized final scores for each level played)
         returns = []
 
         for i in range(self.num_episodes):
@@ -159,7 +201,7 @@ class ClientDQNAgent(Thread):
             # Try to solve a level and collect observations (actions, environment state, reward)
             while appl_state == GameState.PLAYING:
                 # Plot the current state
-                # self.plot_state(env_state)
+                # plot_state(env_state)
 
                 # Predict the next action to take, i.e. the best shot, and get estimated value
                 action, val_estimate = self.plan(env_state)
@@ -167,7 +209,7 @@ class ClientDQNAgent(Thread):
                 # Perform shot, observe new environment state, level score and application state
                 next_env_state, score, appl_state = self.shoot(action)
 
-                # Compute reward (to be the number of additional points gained with the last shot)
+                # Compute reward (to be the number of additional points gained with this shot)
                 reward = score - ret
 
                 # Observe if this level was terminated
@@ -176,11 +218,11 @@ class ClientDQNAgent(Thread):
                 # Calculate initial priority for this transition
                 priority = np.max(self.memory.experience[:, -1], initial=1.0)
 
-                # Save experienced transition (s, a, r, s', t)
+                # Save experienced transition (s, a, r, s', t, p)
                 obs += [(env_state, action, reward, next_env_state, terminal, priority)]
 
-                # update length of current episode
-                self.memory.current_episode_length += 1
+                # Increment number of unsaved transitions of memory by one
+                self.memory.num_unsaved_transitions += 1
 
                 # Update return
                 ret = score
@@ -196,14 +238,14 @@ class ClientDQNAgent(Thread):
             # Convert observations list into np.array
             obs = np.array(obs)
 
-            # If the level is lost, update the return. In the actual case, reward and return would
-            # be zero, but we give some "grace" points, so the network can learn even if it constantly looses.
+            # If the level is lost, punish the return. In the actual case, reward and return would
+            # be zero, but we grant some "grace" points, so the network can learn even if it constantly looses.
             if appl_state == GameState.LOST:
-                # Grace points on return
-                ret *= self.grace_factor
-
                 # Grace points on all the rewards given during this level
                 obs[:, 2] *= self.grace_factor
+
+                # Grace points on return
+                ret *= self.grace_factor
 
             print("Got level score %d" % (ret * self.score_normalization))
 
@@ -226,85 +268,89 @@ class ClientDQNAgent(Thread):
                 print("\nLearning from experience...")
                 self.learn()
 
+            # Every X levels save experience
+            if (i + 1) % 1000 == 0:
+                # Save (new) memory into file
+                self.memory.export_new_experience()
+
             # Synchronize target and online network every sync_period levels
             if (i + 1) % self.sync_period == 0:
                 self.target_network = self.online_network
 
-            # Cool down: reduce epsilon to reduce randomness
+            # Cool down: reduce epsilon to reduce randomness (less explore, more exploit)
             self.epsilon *= self.anneal
 
     def learn(self):
-        """Updates the online network's weights. This is the actual learning step of the agent."""
-
-        # Save (new) memory into file
-        self.memory.export_new_experience()
+        """Updates the online network's weights. This is the actual learning procedure of the agent."""
 
         # Obtain a list of useful transitions to learn on
         batch_ids, probabilities = self.memory.recall(self.minibatch, self.alpha)
 
         # Initialize sample weight, states and targets list
         td_errs = []
-        states = []
+        inputs = []
         targets = []
 
         # Obtain total number of experienced transitions
-        exp_len = self.memory.experience.shape[0]
+        exp_len = self.memory.get_length()
 
         # Compute importance-sampling weights and normalize
         weights = (exp_len * probabilities[batch_ids]) ** (- self.beta)
         weights /= np.max(weights)
 
+        # For each transition in the given batch
         for trans_id in batch_ids:
             state, action, reward, next_state, terminal, priority = self.memory.experience[trans_id]
 
-            # Predict value and action for current state
-            pred_q = np.max(self.online_network.predict(state))
+            # Predict Q-value for current state
+            pred_val = np.max(self.online_network.predict(state))
 
             # Compute TD error (difference between expected and observed (target) return)
             if terminal:
-                # If this is the last transition of the episode, take the direct difference
+                # If this is the last transition of the episode, take the reward directly
                 target_val = reward
             else:
                 # Else, use predicted reward of next step
                 next_action = np.argmax(self.online_network.predict(next_state))
-                next_q = self.target_network.predict(next_state)[0][next_action]
-                target_val = reward + self.gamma * next_q
+                next_val = self.target_network.predict(next_state)[0][next_action]
+                target_val = reward + self.gamma * next_val
 
-            td_err = target_val - pred_q
+            td_err = target_val - pred_val
 
             td_errs += [td_err]
 
             # Update transition priority
             self.memory.experience[trans_id, 5] = np.abs(td_err)
 
-            # Predict Q-value matrix for given state
+            # Predict Q-value matrix for given state and modify the action's Q-value
             target = self.target_network.predict(state)
             target[0][action] = target_val
 
-            # Construct training data
-            states += [state[0]]
+            # Accumulate training data
+            inputs += [state[0]]
             targets += [target[0]]
 
-        states = np.asarray(states)
+        inputs = np.asarray(inputs)
         targets = np.asarray(targets)
 
         # Update the online network's weights
-        self.online_network.fit(states, targets, epochs=1, verbose=0,
+        self.online_network.fit(inputs, targets, epochs=1, verbose=1,
                                 batch_size=self.minibatch,
-                                sample_weight=np.multiply(weights, td_errs))
+                                sample_weight=np.abs(np.multiply(weights, td_errs)))
 
     def plan(self, state):
         """
-        Given a state of the game, the deep Q-learner NN is used to predict a good shot.
+        Given a state of the game, the deep DQN is used to predict a good shot.
         :return: action, consisting of an index, corresponding to some shot parameters
         """
 
-        # Obtain action-value pairs, Q(s,a)
+        # Obtain list of action-values Q(s,a)
         q_vals = self.online_network.predict(state)
 
+        # Do epsilon-greedy
         if np.random.random(1) > self.epsilon:
             # Determine optimal action as usual
-            # Extract the action which has highest predicted Q-value
+            # Extract the action index which has highest predicted Q-value
             action = q_vals.argmax()
         else:
             # Choose action by random
@@ -313,7 +359,8 @@ class ClientDQNAgent(Thread):
         # Estimate the expected value for this level
         val_estimate = np.amax(q_vals)
 
-        print("Expected level score:", int(val_estimate * self.score_normalization))
+        exp_score = int(val_estimate * self.score_normalization + self.ar.get_current_score())
+        print("Expected level score:", exp_score)
 
         return action, val_estimate
 
@@ -332,10 +379,10 @@ class ClientDQNAgent(Thread):
         # Get the environment state (cropped screenshot)
         env_state = self.get_state()
 
-        # Obtain in-game score, normalized
+        # Obtain normalized game score
         score = self.ar.get_current_score() / self.score_normalization
 
-        # Get the application state and return it
+        # Get the application state
         appl_state = self.ar.get_game_state()
 
         return env_state, score, appl_state
@@ -395,6 +442,30 @@ class ClientDQNAgent(Thread):
         self.current_level = next_level
 
         self.ar.load_level(next_level)
+
+    def learn_from_experience(self, experience_path):
+        """Learns from an existing experience dataset."""
+        self.memory = ReplayMemory(experience_path=experience_path, override=False)
+
+        self.memory.reset_priorities()
+
+        exp_len = self.memory.get_length()
+        num_epochs = int(exp_len / 40)
+
+        print("Learning from experience for %d epochs..." % num_epochs)
+
+        for i in range(num_epochs):
+            self.learn()  # TODO: make this more efficient
+
+    def save_model(self, model_path, overwrite=False):
+        """Saves the current model weights to a specified export path."""
+
+        # Save the model
+        self.online_network.save_weights(model_path, overwrite=overwrite)
+
+    def restore_model(self, model_path):
+        self.online_network.load_weights(model_path)
+        self.target_network = self.online_network
 
 
 if __name__ == "__main__":
