@@ -17,7 +17,7 @@ class ClientDQNAgent(Thread):
     """Deep Q-Network (DQN) agent for playing Angry Birds"""
 
     def __init__(self, start_level=1, num_episodes=100000, sim_speed=1, learning_rate=0.0001, replay_period=10,
-                 sync_period=1000, gamma=0.99, epsilon=1, anneal=0.9999, minibatch=32, dueling=True):
+                 sync_period=1000, gamma=0.99, epsilon=1, anneal=0.9999, minibatch=32, dueling=True, latent_dim=512):
         super().__init__()
 
         with open('./src/client/server_client_config.json', 'r') as config:
@@ -87,7 +87,7 @@ class ClientDQNAgent(Thread):
         # the higher the number, the stronger Double Q-Learning and the less overestimation
 
         # Initialize the architecture of the acting and learning part of the DQN (theta)
-        self.online_network = self._build_compile_model()
+        self.online_network = self._build_compile_model(latent_dim)
 
         # Initialize the architecture of a shadowed (target) version of the DQN (theta-),
         # which computes the values during learning
@@ -98,7 +98,7 @@ class ClientDQNAgent(Thread):
 
         print('DQN agent initialized.')
 
-    def _build_compile_model(self):
+    def _build_compile_model(self, latent_dim):
         """
         model = keras.Sequential(
             [
@@ -127,39 +127,56 @@ class ClientDQNAgent(Thread):
         )
         """
 
-        input_frame=Input(shape=(self.state_res_per_dim, self.state_res_per_dim, 3))
-        #action_one_hot = Input(shape=(self.angle_res * self.tap_time_res,))
-        conv1 = Convolution2D(32, (8, 8), strides=4, kernel_initializer=VarianceScaling(scale=2.), activation='relu', use_bias=False)(input_frame)
+        input_frame = Input(shape=(self.state_res_per_dim, self.state_res_per_dim, 3))
+        # action_one_hot = Input(shape=(self.angle_res * self.tap_time_res,))
+        conv1 = Convolution2D(32, (8, 8), strides=4, kernel_initializer=VarianceScaling(scale=2.), activation='relu',
+                              use_bias=False)(input_frame)
         # tf.keras.layers.Dropout(0.25),
 
-        conv2 = Convolution2D(64, (4, 4), strides=2, kernel_initializer=VarianceScaling(scale=2.), activation='relu', use_bias=False)(conv1)
+        conv2 = Convolution2D(64, (4, 4), strides=2, kernel_initializer=VarianceScaling(scale=2.), activation='relu',
+                              use_bias=False)(conv1)
         # tf.keras.layers.Dropout(0.5),
 
-        conv3 = Convolution2D(64, (3, 3), strides=1, kernel_initializer=VarianceScaling(scale=2.), activation='relu', use_bias=False)(conv2)
+        conv3 = Convolution2D(64, (3, 3), strides=1, kernel_initializer=VarianceScaling(scale=2.), activation='relu',
+                              use_bias=False)(conv2)
         # tf.keras.layers.Dropout(0.5),
 
-        conv4 = Convolution2D(1024, (7, 7), strides=1, kernel_initializer=VarianceScaling(scale=2.), activation='relu', use_bias=False)(conv3)
+        conv4 = Convolution2D(latent_dim, (7, 7), strides=1, kernel_initializer=VarianceScaling(scale=2.),
+                              activation='relu',
+                              use_bias=False)(conv3)
         # tf.keras.layers.Dropout(0.5),
-        flat_feature = tf.keras.layers.Flatten()(conv4)
-        hidden_feature = tf.keras.layers.Dense(100, activation='relu')(flat_feature)
-        lrelu_feature = LeakyReLU()(hidden_feature)
-        q_value_prediction = Dense(self.angle_res * self.tap_time_res, )(lrelu_feature)
 
+        latent_feature_1 = tf.keras.layers.Flatten(name='latent')(conv4)
 
+        # Implementation of the Dueling Network principle
         if self.dueling:
-            # Dueling Network
-            # Q = Average of both networks
-            hidden_feature_2 = Dense(512,activation='relu')(flat_feature)
-            state_value_prediction = Dense(1)(hidden_feature_2)
-            q_value_prediction = tf.keras.layers.Average()([q_value_prediction, state_value_prediction])
+            # State value prediction
+            latent_feature_2 = Dense(512, activation='relu', name='latent_V')(latent_feature_1)
+            state_value = Dense(1, name='V')(latent_feature_2)
 
+            # Advantage prediction
+            latent_feature_2 = tf.keras.layers.Dense(128, activation='relu', name='latent_A')(latent_feature_1)
+            advantage = Dense(self.angle_res * self.tap_time_res, name='A')(latent_feature_2)
 
+            # Q-value = average of both sub-networks
+            # q_value = tf.keras.layers.Average(name='Q')([advantage, state_value])
+            q_values = tf.add(state_value,
+                              tf.subtract(advantage, tf.reduce_mean(advantage, axis=1,
+                                                                    keepdims=True,
+                                                                    name='A_mean'),
+                                          name='Sub'),
+                              name='Q')
+        else:
+            # Direct Q-value prediction
+            latent_feature_2 = tf.keras.layers.Dense(128, activation='relu', name='latent_2')(latent_feature_1)
+            lrelu_feature = LeakyReLU()(latent_feature_2)
+            q_values = Dense(self.angle_res * self.tap_time_res, name='Q')(lrelu_feature)
 
-        model = tf.keras.Model(inputs=[input_frame], outputs=[q_value_prediction])
+        model = tf.keras.Model(inputs=[input_frame], outputs=[q_values])
         model.compile(loss='huber_loss', optimizer=self._optimizer)
 
-        #model.summary()
-        #tf.keras.utils.plot_model(model, to_file='model_plot.png', show_shapes=True, show_layer_names=True)
+        # model.summary()
+        tf.keras.utils.plot_model(model, to_file='model_plot.png', show_shapes=True, show_layer_names=True)
         return model
 
     def run(self):
