@@ -17,7 +17,7 @@ class ClientDQNAgent(Thread):
     """Deep Q-Network (DQN) agent for playing Angry Birds"""
 
     def __init__(self, start_level=1, num_episodes=100000, sim_speed=1, learning_rate=0.0001, replay_period=10,
-                 sync_period=1000, gamma=0.99, epsilon=1, anneal=0.9999, minibatch=32):
+                 sync_period=1000, gamma=0.99, epsilon=1, anneal=0.9999, minibatch=32, dueling=True):
         super().__init__()
 
         with open('./src/client/server_client_config.json', 'r') as config:
@@ -61,7 +61,7 @@ class ClientDQNAgent(Thread):
         self.state_res_per_dim = 124
 
         # To use the dueling feature
-        self.dueling = True
+        self.dueling = dueling
 
         # Discount factor
         self.gamma = gamma
