@@ -99,34 +99,7 @@ class ClientDQNAgent(Thread):
         print('DQN agent initialized.')
 
     def _build_compile_model(self, latent_dim):
-        """
-        model = keras.Sequential(
-            [
-                tf.keras.layers.Conv2D(32, (8, 8), strides=4, kernel_initializer=VarianceScaling(scale=2.),
-                                       activation='relu', use_bias=False,
-                                       input_shape=(self.state_res_per_dim, self.state_res_per_dim, 3)),
-                # tf.keras.layers.Dropout(0.25),
-
-                tf.keras.layers.Conv2D(64, (4, 4), strides=2, kernel_initializer=VarianceScaling(scale=2.),
-                                       activation='relu', use_bias=False),
-                # tf.keras.layers.Dropout(0.5),
-
-                tf.keras.layers.Conv2D(64, (3, 3), strides=1, kernel_initializer=VarianceScaling(scale=2.),
-                                       activation='relu', use_bias=False),
-                # tf.keras.layers.Dropout(0.5),
-
-                tf.keras.layers.Conv2D(1024, (7, 7), strides=1, kernel_initializer=VarianceScaling(scale=2.),
-                                       activation='relu', use_bias=False),
-                # tf.keras.layers.Dropout(0.5),
-                tf.keras.layers.Flatten(),
-
-                tf.keras.layers.Dense(100, activation='relu'),
-
-                tf.keras.layers.Dense(self.angle_res * self.tap_time_res, activation='linear')
-            ]
-        )
-        """
-
+        
         input_frame = Input(shape=(self.state_res_per_dim, self.state_res_per_dim, 3))
         # action_one_hot = Input(shape=(self.angle_res * self.tap_time_res,))
         conv1 = Convolution2D(32, (8, 8), strides=4, kernel_initializer=VarianceScaling(scale=2.), activation='relu',
@@ -223,6 +196,9 @@ class ClientDQNAgent(Thread):
                 # Predict the next action to take, i.e. the best shot, and get estimated value
                 action, val_estimate = self.plan(env_state)
 
+                # Try to plot a saliency map without classes
+                # plot_saliency_map(env_state, self.target_network)
+                
                 # Perform shot, observe new environment state, level score and application state
                 next_env_state, score, appl_state = self.shoot(action)
 
