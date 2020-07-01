@@ -38,6 +38,24 @@ def plot_scores(scores):
     plt.legend()
     plt.show()
 
+def plot_win_loss_ratio(list_of_wins):
+    # n = size of chunks - 1
+    n = 100
+    chunks = np.array_split(np.array(list_of_wins),n)
+    print(chunks)
+    
+    # count the winning games per chunk divided by the size
+    ratios = [np.count_nonzero(l == 1)/n for l in chunks]
+    x = [n*(i+1) for i,y in enumerate(ratios)]
+    print(ratios)
+    
+    plt.plot(x, ratios)
+    plt.title("Win Loss Ratio")
+    plt.xlabel("Episodes")
+    plt.ylabel("Percentage")
+    plt.ylim(ymin=0, ymax=1)
+    plt.legend()
+    plt.show()
 
 def plot_state(state):
     # De-normalize state into image

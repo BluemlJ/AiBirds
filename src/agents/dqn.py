@@ -172,6 +172,7 @@ class ClientDQNAgent(Thread):
     def play(self):
         # Initialize return list (list of normalized final scores for each level played)
         returns = []
+        win_loss_ratio = []
 
         for i in range(self.num_episodes):
             print("\nEpisode %d, Level %d, epsilon = %f" % (i + 1, self.ar.get_current_level(), self.epsilon))
@@ -240,7 +241,16 @@ class ClientDQNAgent(Thread):
                 # Grace points on return
                 ret *= self.grace_factor
 
+                # add a loss to the ratio
+                win_loss_ratio += [0]
+                print("Game lost")
+            else:
+                # add a win to the ratio
+                win_loss_ratio += [1]
+                print("Game won")
+
             print("Got level score %d" % (ret * self.score_normalization))
+           
 
             # Save the return
             returns += [ret]
@@ -248,6 +258,7 @@ class ClientDQNAgent(Thread):
             # Every X episodes, plot the score graph
             if (i + 1) % 200 == 0:
                 plot_scores(np.array(returns) * self.score_normalization)
+                plot_win_loss_ratio(win_loss_ratio)
 
             # Append observations to experience buffer
             self.memory.memorize(obs)
