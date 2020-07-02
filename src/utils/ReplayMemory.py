@@ -23,7 +23,7 @@ class ReplayMemory:
                       experience_path)
         else:
             if os.path.exists(experience_path):
-                print("Overriding previously saved experience.")
+                print("Overriding previously saved experience at %s." % experience_path)
                 os.remove(experience_path)
 
         self.num_unsaved_transitions = 0
@@ -58,11 +58,14 @@ class ReplayMemory:
     def get_length(self):
         return self.experience.shape[0]
 
-    def export_all_experience(self):
+    def export_all_experience(self, experience_path=None):
         """Exports the total experience data to a bzipped pickle file. For each level, the sequences of shots is saved.
                 Each shot consists of the initial state, the chosen action and the achieved reward."""
         levels = []
         current_level = []
+
+        if experience_path is None:
+            experience_path = self.experience_path
 
         # Convert the experience into a more efficient format
         for state, action, reward, next_state, terminal, priority in self.experience:
@@ -73,8 +76,9 @@ class ReplayMemory:
                 current_level = []
 
         # Save it
-        with bz2.open(self.experience_path, "wb") as f:
-            pickle.dump(levels, f)
+        with bz2.open(experience_path, "wb") as f:
+            for level in levels:
+                pickle.dump(level, f)
         print("Stored", len(levels), "levels.")
 
     def export_new_experience(self):
@@ -151,6 +155,9 @@ class ReplayMemory:
                 experience = np.append(experience, obs, axis=0)
 
         self.experience = experience
+
+    def get_priorities(self):
+        return self.experience[:, 5]
 
     def reset_priorities(self):
         self.experience[:, 5] = 1

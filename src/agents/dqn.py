@@ -17,7 +17,8 @@ class ClientDQNAgent(Thread):
     """Deep Q-Network (DQN) agent for playing Angry Birds"""
 
     def __init__(self, start_level=1, num_episodes=100000, sim_speed=1, learning_rate=0.0001, replay_period=10,
-                 sync_period=1000, gamma=0.99, epsilon=1, anneal=0.9999, minibatch=32, dueling=True, latent_dim=512):
+                 sync_period=1000, gamma=0.99, epsilon=1, anneal=0.9999, minibatch=32, dueling=True, latent_dim=512,
+                 experience_path="data/experiences.bz2"):
         super().__init__()
 
         with open('./src/client/server_client_config.json', 'r') as config:
@@ -94,7 +95,7 @@ class ClientDQNAgent(Thread):
         self.target_network = self.online_network
 
         # Initialize the memory where all the experience will be memorized
-        self.memory = ReplayMemory(override=False)
+        self.memory = ReplayMemory(override=False, experience_path=experience_path)
 
         print('DQN agent initialized.')
 
@@ -233,7 +234,7 @@ class ClientDQNAgent(Thread):
                 terminal = not appl_state == GameState.PLAYING
 
                 # Calculate initial priority for this transition
-                priority = np.max(self.memory.experience[:, -1], initial=1.0)
+                priority = np.max(self.memory.get_priorities(), initial=1.0)
 
                 # Save experienced transition (s, a, r, s', t, p)
                 obs += [(env_state, action, reward, next_env_state, terminal, priority)]
@@ -269,9 +270,10 @@ class ClientDQNAgent(Thread):
             # Save the return
             returns += [ret]
 
-            # Every X episodes, plot the score graph
+            # Every X episodes, plot the score and priority graph
             if (i + 1) % 200 == 0:
                 plot_scores(np.array(returns) * self.score_normalization)
+                plot_priorities(self.memory.get_priorities())
 
             # Append observations to experience buffer
             self.memory.memorize(obs)
@@ -299,6 +301,7 @@ class ClientDQNAgent(Thread):
 
     def learn(self):
         """Updates the online network's weights. This is the actual learning procedure of the agent."""
+        # TODO: Make this more efficient (especially for large batches)
 
         # Obtain a list of useful transitions to learn on
         batch_ids, probabilities = self.memory.recall(self.minibatch, self.alpha)
@@ -351,7 +354,7 @@ class ClientDQNAgent(Thread):
         targets = np.asarray(targets)
 
         # Update the online network's weights
-        self.online_network.fit(inputs, targets, epochs=1, verbose=1,
+        self.online_network.fit(inputs, targets, epochs=1, verbose=0,
                                 batch_size=self.minibatch,
                                 sample_weight=np.abs(np.multiply(weights, td_errs)))
 
@@ -460,19 +463,27 @@ class ClientDQNAgent(Thread):
 
         self.ar.load_level(next_level)
 
-    def learn_from_experience(self, experience_path):
-        """Learns from an existing experience dataset."""
-        self.memory = ReplayMemory(experience_path=experience_path, override=False)
+    def learn_from_experience(self, reset_priorities=False):
+        """Tells the agent to learn from the its current experience."""
+        # self.memory = ReplayMemory(override=False, **kwargs)
 
-        self.memory.reset_priorities()
+        if reset_priorities:
+            self.memory.reset_priorities()
 
         exp_len = self.memory.get_length()
         num_epochs = int(exp_len / 40)
-
         print("Learning from experience for %d epochs..." % num_epochs)
 
+        print(self.memory.experience.shape)
+
         for i in range(num_epochs):
-            self.learn()  # TODO: make this more efficient
+            if i % 10 == 0:
+                print("Epoch:", i)
+
+            if i % 100 == 0:
+                plot_priorities(self.memory.get_priorities())
+
+            self.learn()
 
     def save_model(self, model_path, overwrite=False):
         """Saves the current model weights to a specified export path."""
@@ -481,8 +492,15 @@ class ClientDQNAgent(Thread):
         self.online_network.save_weights(model_path, overwrite=overwrite)
 
     def restore_model(self, model_path):
+        print("Restoring model from '%s'." % model_path)
         self.online_network.load_weights(model_path)
         self.target_network = self.online_network
+
+    def forget(self):
+        self.memory = ReplayMemory(self.memory.experience_path, override=True)
+
+    def set_experience(self, experience_path):
+        self.memory = ReplayMemory(experience_path, override=False)
 
 
 if __name__ == "__main__":

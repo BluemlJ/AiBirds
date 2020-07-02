@@ -7,24 +7,30 @@ def main(*args):
     # agent = na.ClientNaiveAgent()  # Provided naive agent
     # agent = dum.ClientDummyAgent(start_level=1999)  # Dummy NN agent
 
-    # Deep Q-Network agent
+    # Deep Q-Network agent, commented values are used in Nikonova et al.
     agent = dqn.ClientDQNAgent(start_level=1,
-                               num_episodes=10000,
+                               num_episodes=6000,
                                sim_speed=60,
                                replay_period=8,
-                               learning_rate=0.0001,  # 0.0001 Nikonova et al.
-                               minibatch=32,
+                               learning_rate=0.0001,  # 0.0001
+                               minibatch=128,  # 32
                                sync_period=1024,
                                gamma=0.99,
-                               epsilon=1,
+                               epsilon=0.25,
                                anneal=0.9999,
                                dueling=True,
-                               latent_dim=512)  # 512 Nikonova et al.
+                               latent_dim=512,  # 512
+                               experience_path="data/svenja_4.bz2")
 
-    # agent.learn_from_experience("data/experiences.bz2")
-    # agent.restore_model("models/justus")
+    agent.restore_model("models/svenja_3")
     agent.run()
-    agent.save_model("models/nadine")
+    # agent.learn_from_experience(reset_priorities=True)
+    # agent.save_model("models/svenja")
+
+    # agent.set_experience(experience_path="data/svenja.bz2")
+    # agent.learn_from_experience(reset_priorities=True)
+    agent.save_model("models/svenja_4")
+    agent.memory.export_all_experience()
 
 
 if __name__ == "__main__":

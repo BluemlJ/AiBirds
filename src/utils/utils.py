@@ -54,3 +54,13 @@ def angle_to_vector(alpha):
     dy = np.cos(rad_shot_angle) * 80
 
     return int(dx), int(dy)
+
+
+def plot_priorities(priorities):
+    length = len(priorities)
+    plt.bar(range(length), priorities)
+    plt.title("Transition priorities in experience set")
+    plt.xlabel("Transition")
+    plt.ylabel("Priority")
+    plt.savefig("priorities.png", dpi=800)
+    plt.show()
