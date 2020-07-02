@@ -100,33 +100,6 @@ class ClientDQNAgent(Thread):
         print('DQN agent initialized.')
 
     def _build_compile_model(self, latent_dim):
-        """
-        model = keras.Sequential(
-            [
-                tf.keras.layers.Conv2D(32, (8, 8), strides=4, kernel_initializer=VarianceScaling(scale=2.),
-                                       activation='relu', use_bias=False,
-                                       input_shape=(self.state_res_per_dim, self.state_res_per_dim, 3)),
-                # tf.keras.layers.Dropout(0.25),
-
-                tf.keras.layers.Conv2D(64, (4, 4), strides=2, kernel_initializer=VarianceScaling(scale=2.),
-                                       activation='relu', use_bias=False),
-                # tf.keras.layers.Dropout(0.5),
-
-                tf.keras.layers.Conv2D(64, (3, 3), strides=1, kernel_initializer=VarianceScaling(scale=2.),
-                                       activation='relu', use_bias=False),
-                # tf.keras.layers.Dropout(0.5),
-
-                tf.keras.layers.Conv2D(1024, (7, 7), strides=1, kernel_initializer=VarianceScaling(scale=2.),
-                                       activation='relu', use_bias=False),
-                # tf.keras.layers.Dropout(0.5),
-                tf.keras.layers.Flatten(),
-
-                tf.keras.layers.Dense(100, activation='relu'),
-
-                tf.keras.layers.Dense(self.angle_res * self.tap_time_res, activation='linear')
-            ]
-        )
-        """
 
         input_frame = Input(shape=(self.state_res_per_dim, self.state_res_per_dim, 3))
         # action_one_hot = Input(shape=(self.angle_res * self.tap_time_res,))
@@ -200,6 +173,7 @@ class ClientDQNAgent(Thread):
     def play(self):
         # Initialize return list (list of normalized final scores for each level played)
         returns = []
+        win_loss_ratio = []
 
         for i in range(self.num_episodes):
             print("\nEpisode %d, Level %d, epsilon = %f" % (i + 1, self.ar.get_current_level(), self.epsilon))
@@ -223,6 +197,9 @@ class ClientDQNAgent(Thread):
 
                 # Predict the next action to take, i.e. the best shot, and get estimated value
                 action, val_estimate = self.plan(env_state)
+
+                # Try to plot a saliency map without classes
+                # plot_saliency_map(env_state, self.target_network)
 
                 # Perform shot, observe new environment state, level score and application state
                 next_env_state, score, appl_state = self.shoot(action)
@@ -265,7 +242,16 @@ class ClientDQNAgent(Thread):
                 # Grace points on return
                 ret *= self.grace_factor
 
+                # add a loss to the ratio
+                win_loss_ratio += [0]
+                print("Game lost")
+            else:
+                # add a win to the ratio
+                win_loss_ratio += [1]
+                print("Game won")
+
             print("Got level score %d" % (ret * self.score_normalization))
+
 
             # Save the return
             returns += [ret]
@@ -274,6 +260,7 @@ class ClientDQNAgent(Thread):
             if (i + 1) % 200 == 0:
                 plot_scores(np.array(returns) * self.score_normalization)
                 plot_priorities(self.memory.get_priorities())
+                plot_win_loss_ratio(win_loss_ratio)
 
             # Append observations to experience buffer
             self.memory.memorize(obs)

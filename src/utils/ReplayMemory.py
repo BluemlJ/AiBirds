@@ -86,24 +86,17 @@ class ReplayMemory:
         Each shot consists of the initial state, the chosen action and the achieved reward."""
         levels = []
         current_level = []
-        num_shots = 0
 
-        for i in range(self.num_unsaved_transitions):
-            # i[0]: img, i[1]: action, i[2]: reward, i[3]: img, i[4]: termination, i[5]: termination
-            current_offset = -self.num_unsaved_transitions + i
-            current_level.append(self.experience[current_offset][0])
-            current_level.append(self.experience[current_offset][1])
-            current_level.append(self.experience[current_offset][2])
-            current_level.append(self.experience[current_offset][5])
-            num_shots += 1
-            if self.experience[current_offset][4]:
+        for state, action, reward, next_state, terminal, priority in self.experience[-self.num_unsaved_transitions : ]:
+            current_level += [state, action, reward, priority]
+
+            if terminal:
                 levels.append(current_level)
                 current_level = []
-                num_shots = 0
 
         # append the experience of the new levels to the experience file
         with bz2.open(self.experience_path, "ab") as f:
-            _ = [pickle.dump(level, f) for level in levels]
+            for level in levels: pickle.dump(level, f)
         print("Stored", len(levels), "levels.")
 
         # reset the current episode_length
