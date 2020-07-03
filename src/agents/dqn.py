@@ -253,9 +253,9 @@ class ClientDQNAgent(Thread):
 
             # Every X episodes, plot the score and priority graph
             if (i + 1) % 200 == 0:
-                plot_scores(np.array(returns) * self.score_normalization)
-                plot_priorities(self.memory.get_priorities())
                 plot_win_loss_ratio(win_loss_ratio)
+                plot_priorities(self.memory.get_priorities())
+                plot_scores(np.array(returns) * self.score_normalization)
 
             # Append observations to experience buffer
             self.memory.memorize(obs)
@@ -306,8 +306,11 @@ class ClientDQNAgent(Thread):
         # For each transition in the given batch
         for trans_id, (state, action, reward, next_state, terminal) in zip(trans_ids, transitions):
 
+            norm_state = state / 255
+            norm_next_state = next_state / 255
+
             # Predict Q-value for current state
-            pred_val = np.max(self.online_network.predict(state))
+            pred_val = np.max(self.online_network.predict(norm_state))
 
             # Compute TD error (difference between expected and observed (target) return)
             if terminal:
@@ -315,8 +318,8 @@ class ClientDQNAgent(Thread):
                 target_val = reward
             else:
                 # Else, use predicted reward of next step
-                next_action = np.argmax(self.online_network.predict(next_state))
-                next_val = self.target_network.predict(next_state)[0][next_action]
+                next_action = np.argmax(self.online_network.predict(norm_next_state))
+                next_val = self.target_network.predict(norm_next_state)[0][next_action]
                 target_val = reward + self.gamma * next_val
 
             td_err = target_val - pred_val
@@ -327,7 +330,7 @@ class ClientDQNAgent(Thread):
             self.memory.set_priority(trans_id, np.abs(td_err))
 
             # Predict Q-value matrix for given state and modify the action's Q-value
-            target = self.target_network.predict(state)
+            target = self.target_network.predict(norm_state)
             target[0][action] = target_val
 
             # Accumulate training data
@@ -348,8 +351,11 @@ class ClientDQNAgent(Thread):
         :return: action, consisting of an index, corresponding to some shot parameters
         """
 
+        # Normalize
+        norm_state = state / 255
+
         # Obtain list of action-values Q(s,a)
-        q_vals = self.online_network.predict(state)
+        q_vals = self.online_network.predict(norm_state)
 
         # Do epsilon-greedy
         if np.random.random(1) > self.epsilon:
@@ -387,7 +393,6 @@ class ClientDQNAgent(Thread):
         score = self.ar.get_current_score() / self.score_normalization
 
         # Get the application state
-
         appl_state = self.ar.get_game_state()
 
         return env_state, score, appl_state
@@ -418,7 +423,7 @@ class ClientDQNAgent(Thread):
         return dx, dy, tap_time
 
     def get_state(self):
-        """Fetches the current game screenshot and turns it into a cropped, scaled and normalized pixel matrix."""
+        """Fetches the current game screenshot and turns it into a cropped and scaled pixel matrix."""
 
         # Obtain game screenshot
         screenshot, ground_truth = self.ar.get_ground_truth_with_screenshot()
@@ -433,8 +438,11 @@ class ClientDQNAgent(Thread):
         # Rescale the image into a (smaller) square
         scaled = cv2.resize(crop, (self.state_res_per_dim, self.state_res_per_dim))
 
+        # Convert into unsigned byte
+        state = np.expand_dims(scaled.astype(np.uint8), axis=0)
+
         # Normalize the scaled and cropped image
-        state = np.expand_dims(scaled.astype(np.float32) / 255, axis=0)
+        # state = np.expand_dims(scaled.astype(np.float32) / 255, axis=0)
 
         return state
 

@@ -7,7 +7,7 @@ import os
 class ReplayMemory:
     def __init__(self, state_res_per_dim, experience_path="data/experiences.hdf5", overwrite=False):
         # Initialize the experience, containing all (s, a, r, s', t) tuples experienced so far
-        self.states = da.empty((0, state_res_per_dim, state_res_per_dim, 3), type=int)
+        self.states = da.empty((0, state_res_per_dim, state_res_per_dim, 3), type=np.uint)
         self.actions = np.empty((0,), dtype='int')
         self.rewards = np.empty((0,), dtype='float32')
         self.terminals = np.empty((0,), dtype='bool')
@@ -36,7 +36,7 @@ class ReplayMemory:
     def memorize(self, observations):
         obs_states_np = np.stack(observations[:, 0]).reshape((-1, 124, 124, 3))
         obs_states = da.from_array(obs_states_np)
-        obs_actions = np.asarray(observations[:, 1], dtype='int')
+        obs_actions = np.asarray(observations[:, 1], dtype=np.uint)
         obs_rewards = np.asarray(observations[:, 2], dtype='float32')
         terminals = np.array((len(observations) - 1) * [False] + [True], dtype='bool')
         max_priority = np.amax(self.get_priorities(), initial=1.0)
