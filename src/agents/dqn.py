@@ -95,7 +95,9 @@ class ClientDQNAgent(Thread):
         self.target_network = self.online_network
 
         # Initialize the memory where all the experience will be memorized
-        self.memory = ReplayMemory(override=False, experience_path=experience_path)
+        self.memory = ReplayMemory(state_res_per_dim=self.state_res_per_dim,
+                                   overwrite=False,
+                                   experience_path=experience_path)
 
         print('DQN agent initialized.')
 
@@ -210,14 +212,8 @@ class ClientDQNAgent(Thread):
                 # Observe if this level was terminated
                 terminal = not appl_state == GameState.PLAYING
 
-                # Calculate initial priority for this transition
-                priority = np.max(self.memory.get_priorities(), initial=1.0)
-
                 # Save experienced transition (s, a, r, s', t, p)
-                obs += [(env_state, action, reward, next_env_state, terminal, priority)]
-
-                # Increment number of unsaved transitions of memory by one
-                self.memory.num_unsaved_transitions += 1
+                obs += [(env_state, action, reward, next_env_state, terminal)]
 
                 # Update return
                 ret = score
@@ -252,7 +248,6 @@ class ClientDQNAgent(Thread):
 
             print("Got level score %d" % (ret * self.score_normalization))
 
-
             # Save the return
             returns += [ret]
 
@@ -277,7 +272,7 @@ class ClientDQNAgent(Thread):
             # Every X levels save experience
             if (i + 1) % 1000 == 0:
                 # Save (new) memory into file
-                self.memory.export_new_experience()
+                self.memory.export_experience(overwrite=True)
 
             # Synchronize target and online network every sync_period levels
             if (i + 1) % self.sync_period == 0:
@@ -291,9 +286,9 @@ class ClientDQNAgent(Thread):
         # TODO: Make this more efficient (especially for large batches)
 
         # Obtain a list of useful transitions to learn on
-        batch_ids, probabilities = self.memory.recall(self.minibatch, self.alpha)
+        trans_ids, probabilities = self.memory.recall(self.minibatch, self.alpha)
 
-        # Initialize sample weight, states and targets list
+        # Initialize sample weight, input, and targets list
         td_errs = []
         inputs = []
         targets = []
@@ -302,12 +297,14 @@ class ClientDQNAgent(Thread):
         exp_len = self.memory.get_length()
 
         # Compute importance-sampling weights and normalize
-        weights = (exp_len * probabilities[batch_ids]) ** (- self.beta)
+        weights = (exp_len * probabilities[trans_ids]) ** (- self.beta)
         weights /= np.max(weights)
 
+        # Get array of transitions
+        transitions = self.memory.get_transitions(trans_ids)
+
         # For each transition in the given batch
-        for trans_id in batch_ids:
-            state, action, reward, next_state, terminal, priority = self.memory.experience[trans_id]
+        for trans_id, (state, action, reward, next_state, terminal) in zip(trans_ids, transitions):
 
             # Predict Q-value for current state
             pred_val = np.max(self.online_network.predict(state))
@@ -327,7 +324,7 @@ class ClientDQNAgent(Thread):
             td_errs += [td_err]
 
             # Update transition priority
-            self.memory.experience[trans_id, 5] = np.abs(td_err)
+            self.memory.set_priority(trans_id, np.abs(td_err))
 
             # Predict Q-value matrix for given state and modify the action's Q-value
             target = self.target_network.predict(state)
@@ -390,6 +387,7 @@ class ClientDQNAgent(Thread):
         score = self.ar.get_current_score() / self.score_normalization
 
         # Get the application state
+
         appl_state = self.ar.get_game_state()
 
         return env_state, score, appl_state
@@ -445,7 +443,6 @@ class ClientDQNAgent(Thread):
 
         # In any case, pick a random level between 1 and 200
         next_level = np.random.randint(199) + 1
-
         self.current_level = next_level
 
         self.ar.load_level(next_level)
@@ -461,7 +458,7 @@ class ClientDQNAgent(Thread):
         num_epochs = int(exp_len / 40)
         print("Learning from experience for %d epochs..." % num_epochs)
 
-        print(self.memory.experience.shape)
+        print(self.memory.get_length())
 
         for i in range(num_epochs):
             if i % 10 == 0:
@@ -483,14 +480,8 @@ class ClientDQNAgent(Thread):
         self.online_network.load_weights(model_path)
         self.target_network = self.online_network
 
-    def forget(self):
-        self.memory = ReplayMemory(self.memory.experience_path, override=True)
-
     def set_experience(self, experience_path):
-        self.memory = ReplayMemory(experience_path, override=False)
+        self.memory = ReplayMemory(experience_path, overwrite=False)
 
-
-if __name__ == "__main__":
-    agent = ClientDQNAgent()
-    # agent.q_network.summary()
-    agent.run()
+    def forget(self):
+        self.memory = ReplayMemory(self.memory.experience_path, overwrite=True)

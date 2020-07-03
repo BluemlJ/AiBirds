@@ -1,23 +1,28 @@
 import numpy as np
-import pickle
-import bz2
+import dask.array as da
+import h5py
 import os
 
 
 class ReplayMemory:
-    def __init__(self, experience_path="data/experiences.bz2", override=False):
-        # Initialize the experience list, a list of transitions
-        # containing all (s, a, r, s', t, p) tuples experienced so far
-        self.experience = np.empty((0, 6))
+    def __init__(self, state_res_per_dim, experience_path="data/experiences.hdf5", overwrite=False):
+        # Initialize the experience, containing all (s, a, r, s', t) tuples experienced so far
+        self.states = da.empty((0, state_res_per_dim, state_res_per_dim, 3), type=int)
+        self.actions = np.empty((0,), dtype='int')
+        self.rewards = np.empty((0,), dtype='float32')
+        self.terminals = np.empty((0,), dtype='bool')
+        self.priorities = np.empty((0,), dtype='float32')
 
-        # Path string to location for saving the memory data
+        self.state_res_per_dim = state_res_per_dim
+
+        # Path string to location for saving the experience data
         self.experience_path = experience_path
 
         # Load existing experience if override is false (and experience exists)
-        if not override:
+        if not overwrite:
             if os.path.exists(experience_path):
                 print("Reloading existing experience.")
-                self.load_experience()
+                self.import_experience()
             else:
                 print("No previous experience found at '%s'. A new experience dataset will be created." %
                       experience_path)
@@ -26,131 +31,124 @@ class ReplayMemory:
                 print("Overriding previously saved experience at %s." % experience_path)
                 os.remove(experience_path)
 
-        self.num_unsaved_transitions = 0
+        self.open_file = None
 
     def memorize(self, observations):
-        self.experience = np.append(self.experience, observations, axis=0)
+        obs_states_np = np.stack(observations[:, 0]).reshape((-1, 124, 124, 3))
+        obs_states = da.from_array(obs_states_np)
+        obs_actions = np.asarray(observations[:, 1], dtype='int')
+        obs_rewards = np.asarray(observations[:, 2], dtype='float32')
+        terminals = np.array((len(observations) - 1) * [False] + [True], dtype='bool')
+        max_priority = np.amax(self.get_priorities(), initial=1.0)
+        priorities = np.asarray(len(observations) * [max_priority], dtype='float32')
+
+        self.states = da.concatenate([self.states, obs_states], axis=0)
+        self.actions = np.concatenate((self.actions, obs_actions), axis=0)
+        self.rewards = np.concatenate((self.rewards, obs_rewards), axis=0)
+        self.terminals = np.concatenate((self.terminals, terminals), axis=0)
+        self.priorities = np.concatenate((self.priorities, priorities), axis=0)
 
     def recall(self, num_transitions, alpha):
         """Returns a batch of transition IDs, depending on the transitions' priorities.
         This is part of Prioritized Experience Replay."""
 
         # Obtain number of experienced transitions
-        exp_len = self.experience.shape[0]
+        exp_len = self.get_length()
 
         # Obtain batch size
         batch_size = np.min((exp_len, num_transitions))
 
         # Obtain priorities
-        priorities = np.array(self.experience[:, -1], dtype='float64')
+        priorities = self.get_priorities()
 
         # Take power of each element with alpha to adjust priorities
-        priorities = np.power(priorities, alpha)
+        adjusted_priorities = np.power(priorities, alpha)
 
         # Convert priorities into probabilities
-        probabilities = priorities / np.sum(priorities)
+        probabilities = adjusted_priorities / np.sum(adjusted_priorities)
 
-        # Randomly select transitions with given priorities (used as probabilities)
+        # Randomly select transitions with given probabilities
         trans_ids = np.random.choice(range(exp_len), size=batch_size, p=probabilities)
 
         return trans_ids, probabilities
 
     def get_length(self):
-        return self.experience.shape[0]
+        return self.states.shape[0]
 
-    def export_all_experience(self, experience_path=None):
-        """Exports the total experience data to a bzipped pickle file. For each level, the sequences of shots is saved.
-                Each shot consists of the initial state, the chosen action and the achieved reward."""
-        levels = []
-        current_level = []
+    def get_transitions(self, trans_ids):
+        """Returns an np.array of transitions, selected by their given IDs."""
+
+        num_trans = len(trans_ids)
+
+        states = self.states[trans_ids].compute().reshape((-1, 1, self.state_res_per_dim, self.state_res_per_dim, 3))
+        actions = self.actions[trans_ids]
+        rewards = self.rewards[trans_ids]
+        terminals = self.terminals[trans_ids]
+        next_states = np.zeros((num_trans, self.state_res_per_dim, self.state_res_per_dim, 3))
+
+        # If terminal == True, next_state remains zero matrix
+        next_states[terminals == False] = self.states[trans_ids[terminals == False] + 1]
+        next_states = next_states.reshape((-1, 1, self.state_res_per_dim, self.state_res_per_dim, 3))
+
+        transitions = list(zip(states, actions, rewards, next_states, terminals))
+        return transitions
+
+    def get_priorities(self):
+        return self.priorities
+
+    def set_priority(self, trans_id, priority):
+        self.priorities[trans_id] = priority
+
+    def reset_priorities(self):
+        self.priorities = 1
+
+    def export_experience(self, experience_path=None, overwrite=False):
+        print("Exporting %d transitions..." % self.get_length())
 
         if experience_path is None:
             experience_path = self.experience_path
 
-        # Convert the experience into a more efficient format
-        for state, action, reward, next_state, terminal, priority in self.experience:
-            current_level += [state, action, reward, priority]
+        if overwrite and os.path.exists(experience_path):
+            if self.open_file is not None:
+                self.open_file.close()
+                self.open_file = None
+            os.remove(experience_path)
 
-            if terminal:
-                levels.append(current_level)
-                current_level = []
+        while os.path.exists(experience_path):
+            print("There is already an experience dataset at '%s'." % experience_path)
+            print("Please enter a different path:")
+            experience_path = input()
 
-        # Save it
-        with bz2.open(experience_path, "wb") as f:
-            for level in levels:
-                pickle.dump(level, f)
-        print("Stored", len(levels), "levels.")
+        actions = da.from_array(self.actions, chunks=1)
+        rewards = da.from_array(self.rewards, chunks=1)
+        terminals = da.from_array(self.terminals, chunks=1)
+        priorities = da.from_array(self.priorities, chunks=1)
 
-    def export_new_experience(self):
-        """Exports the experience data to a bzipped pickle file. For each level, the sequences of shots is saved.
-        Each shot consists of the initial state, the chosen action and the achieved reward."""
-        levels = []
-        current_level = []
+        dataset = {"states": self.states,
+                   "actions": actions,
+                   "rewards": rewards,
+                   "terminals": terminals,
+                   "priorities": priorities}
 
-        for state, action, reward, next_state, terminal, priority in self.experience[-self.num_unsaved_transitions : ]:
-            current_level += [state, action, reward, priority]
+        da.to_hdf5(experience_path, dataset, compression="gzip", compression_opts=6)
 
-            if terminal:
-                levels.append(current_level)
-                current_level = []
+        print("Export finished.")
 
-        # append the experience of the new levels to the experience file
-        with bz2.open(self.experience_path, "ab") as f:
-            for level in levels: pickle.dump(level, f)
-        print("Stored", len(levels), "levels.")
+    def import_experience(self, experience_path=None):
+        if experience_path is None:
+            experience_path = self.experience_path
 
-        # reset the current episode_length
-        self.num_unsaved_transitions = 0
+        print("Importing transitions from '%s'..." % experience_path)
 
-    def load_experience(self, num_of_levels = -1):
-        """Load the experience data from the compressed file and return it as a list of transitions.
-        Each transition consists of: initial state, action reward, next state, termination.
-        Loads the first num_of_levels from the file. If num_of_levels = -1, all levels are loaded."""
+        f = h5py.File(experience_path)
+        states = da.from_array(f['states'])
+        self.states = np.zeros((len(states), self.state_res_per_dim, self.state_res_per_dim, 3), dtype='float32')
+        da.store(states, self.states)
+        self.actions = f['actions'].value
+        self.rewards = f['rewards'].value
+        self.terminals = f['terminals'].value
+        self.priorities = f['priorities'].value
 
-        if num_of_levels == -1:
-            print("Try to load all levels.")
-            num_of_levels = 200000
-        else:
-            print("Try to load", num_of_levels, "levels.")
+        self.open_file = f
 
-        with bz2.open(self.experience_path, "rb") as f:
-            levels = []
-            for i in range(num_of_levels):
-                if (i % 1000) == 0:
-                    print("Loaded", i, "levels.")
-                try:
-                    levels.append(pickle.load(f))
-                except EOFError:
-                    break
-            print("Finished loading. Loaded", len(levels), "levels in total.")
-
-        experience = np.empty((0, 6))
-
-        for l in levels:
-            for i in range(int(len(l) / 4)):
-                # add state, action, reward
-                obs = [l[i * 4], l[i * 4 + 1], l[i * 4 + 2]]
-
-                # check if the current transition is not the last transition
-                if (i * 4 + 4) < len(l):
-                    obs.append(l[i * 4 + 4])
-                    obs.append(False)
-                else:
-                    obs.append(None)
-                    obs.append(True)
-
-                # append priority
-                obs.append(l[i * 4 + 3])
-
-                # add the current observation to the total list
-                obs = np.array([obs])
-
-                experience = np.append(experience, obs, axis=0)
-
-        self.experience = experience
-
-    def get_priorities(self):
-        return self.experience[:, 5]
-
-    def reset_priorities(self):
-        self.experience[:, 5] = 1
+        print("Imported %d transitions." % self.get_length())
