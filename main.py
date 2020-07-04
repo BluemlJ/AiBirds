@@ -27,7 +27,7 @@ def main(*args):
     agent.run()
     # agent.learn_from_experience(reset_priorities=True)
     agent.save_model("models/tobias")
-
+    agent.memory.export_experience('data/tobias.hdf5', compress=True)
     # agent.set_experience(experience_path="data/svenja.bz2")
     # agent.learn_from_experience(reset_priorities=True)
     # agent.save_model("models/svenja_4")

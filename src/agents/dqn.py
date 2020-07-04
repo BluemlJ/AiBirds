@@ -212,7 +212,7 @@ class ClientDQNAgent(Thread):
                 # Observe if this level was terminated
                 terminal = not appl_state == GameState.PLAYING
 
-                # Save experienced transition (s, a, r, s', t, p)
+                # Save experienced transition (s, a, r, s', t)
                 obs += [(env_state, action, reward, next_env_state, terminal)]
 
                 # Update return
@@ -240,11 +240,11 @@ class ClientDQNAgent(Thread):
 
                 # add a loss to the ratio
                 win_loss_ratio += [0]
-                print("Game lost")
+                print("Level lost.")
             else:
                 # add a win to the ratio
                 win_loss_ratio += [1]
-                print("Game won")
+                print("Level won!")
 
             print("Got level score %d" % (ret * self.score_normalization))
 
@@ -268,9 +268,10 @@ class ClientDQNAgent(Thread):
                 # Update network weights to fit the experience
                 print("\nLearning from experience...")
                 self.learn()
+                print("Done with learning.")
 
             # Every X levels save experience
-            if (i + 1) % 1000 == 0:
+            if (i + 1) % 32 == 0:
                 # Save (new) memory into file
                 self.memory.export_experience(overwrite=True)
 
@@ -300,7 +301,7 @@ class ClientDQNAgent(Thread):
         weights = (exp_len * probabilities[trans_ids]) ** (- self.beta)
         weights /= np.max(weights)
 
-        # Get array of transitions
+        # Get list of transitions
         transitions = self.memory.get_transitions(trans_ids)
 
         # For each transition in the given batch
@@ -309,7 +310,7 @@ class ClientDQNAgent(Thread):
             norm_state = state / 255
             norm_next_state = next_state / 255
 
-            # Predict Q-value for current state
+            # Predict value V(s) for current state s
             pred_val = np.max(self.online_network.predict(norm_state))
 
             # Compute TD error (difference between expected and observed (target) return)
