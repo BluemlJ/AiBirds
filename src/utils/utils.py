@@ -36,6 +36,7 @@ def plot_scores(scores):
     plt.xlabel("Episode")
     plt.ylabel("Score")
     plt.legend()
+    plt.savefig("plots/scores.png")
     plt.show()
 
 def plot_win_loss_ratio(list_of_wins):
@@ -59,8 +60,7 @@ def plot_win_loss_ratio(list_of_wins):
 
 def plot_state(state):
     # De-normalize state into image
-    state = np.reshape(state, (124, 124, 3))
-    image = (state * 255).astype(np.int)
+    image = np.reshape(state, (124, 124, 3))
 
     # Plot it
     plt.imshow(image)
@@ -121,5 +121,5 @@ def plot_priorities(priorities):
     plt.title("Transition priorities in experience set")
     plt.xlabel("Transition")
     plt.ylabel("Priority")
-    plt.savefig("priorities.png", dpi=800)
+    plt.savefig("plots/priorities.png", dpi=800)
     plt.show()

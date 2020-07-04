@@ -152,7 +152,7 @@ class ClientDQNAgent(Thread):
         model.compile(loss='huber_loss', optimizer=self._optimizer)
 
         # model.summary()
-        tf.keras.utils.plot_model(model, to_file='model_plot.png', show_shapes=True, show_layer_names=True)
+        tf.keras.utils.plot_model(model, to_file='plots/model_plot.png', show_shapes=True, show_layer_names=True)
         return model
 
     def run(self):
@@ -246,12 +246,12 @@ class ClientDQNAgent(Thread):
                 win_loss_ratio += [1]
                 print("Level won!")
 
-            print("Got level score %d" % (ret * self.score_normalization))
+            print("Got level score %d." % self.ar.get_current_score())
 
             # Save the return
             returns += [ret]
 
-            # Every X episodes, plot the score and priority graph
+            # Every X episodes, plot informative graphs
             if (i + 1) % 200 == 0:
                 plot_win_loss_ratio(win_loss_ratio)
                 plot_priorities(self.memory.get_priorities())
@@ -271,7 +271,7 @@ class ClientDQNAgent(Thread):
                 print("Done with learning.")
 
             # Every X levels save experience
-            if (i + 1) % 32 == 0:
+            if (i + 1) % 5000 == 0:
                 # Save (new) memory into file
                 self.memory.export_experience(overwrite=True)
 
@@ -335,7 +335,7 @@ class ClientDQNAgent(Thread):
             target[0][action] = target_val
 
             # Accumulate training data
-            inputs += [state[0]]
+            inputs += [norm_state[0]]
             targets += [target[0]]
 
         inputs = np.asarray(inputs)

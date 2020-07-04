@@ -150,7 +150,9 @@ class ReplayMemory:
         print("Importing transitions from '%s'..." % experience_path)
 
         f = h5py.File(experience_path)
-        self.states = da.from_array(f['states'])
+        states = da.from_array(f['states'])
+        self.states = np.zeros((len(states), 1, self.state_res_per_dim, self.state_res_per_dim, 3), dtype='float32')
+        da.store(states, self.states)
         self.actions = f['actions'].value
         self.rewards = f['rewards'].value
         self.terminals = f['terminals'].value
