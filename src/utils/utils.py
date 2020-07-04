@@ -45,16 +45,15 @@ def plot_win_loss_ratio(list_of_wins):
     print(chunks)
     
     # count the winning games per chunk divided by the size
-    ratios = [np.count_nonzero(l == 1)/n for l in chunks]
-    x = [n*(i+1) for i,y in enumerate(ratios)]
-    print(ratios)
+    ratio = [np.count_nonzero(l == 1)/n for l in chunks]
+    x = [n*(i+1) for i,y in enumerate(ratio)]
+    print(ratio)
     
-    plt.plot(x, ratios)
+    plt.plot(x, ratio)
     plt.title("Win Loss Ratio")
     plt.xlabel("Episodes")
     plt.ylabel("Percentage")
-    plt.ylim(ymin=0, ymax=1)
-    plt.legend()
+    plt.axis([None, None, 0, 1])
     plt.show()
 
 def plot_state(state):
