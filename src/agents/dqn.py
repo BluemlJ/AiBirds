@@ -2,6 +2,9 @@ import json
 import socket
 import cv2
 import tensorflow as tf
+import dask
+import os
+import psutil
 
 from threading import Thread
 from tensorflow import keras
@@ -11,12 +14,15 @@ from src.client.agent_client import AgentClient, GameState
 from src.utils.utils import *
 from src.utils.Vision import Vision
 from src.utils.ReplayMemory import ReplayMemory
+from operator import itemgetter
+from pympler import tracker
+from threading import Thread
 
 
 class ClientDQNAgent(Thread):
     """Deep Q-Network (DQN) agent for playing Angry Birds"""
 
-    def __init__(self, start_level=1, num_episodes=100000, sim_speed=1, learning_rate=0.0001, replay_period=10,
+    def __init__(self, start_level=1, num_episodes=100000, sim_speed=1, learning_rate=0.0001, replay_period=8,
                  sync_period=1000, gamma=0.99, epsilon=1, anneal=0.9999, minibatch=32, dueling=True, latent_dim=512,
                  experience_path="data/experiences.bz2"):
         super().__init__()
@@ -168,88 +174,27 @@ class ClientDQNAgent(Thread):
         self.ar.load_level(self.current_level)
 
         # Train the network for num_episodes episodes
-        print("Start playing...")
         self.play()
-        print("Playing finished successfully!")
 
     def play(self):
+        print("Start playing...")
+
         # Initialize return list (list of normalized final scores for each level played)
         returns = []
         win_loss_ratio = []
 
+        # For memory tracking
+        # mem = tracker.SummaryTracker()
+        process = psutil.Process(os.getpid())
+
         for i in range(self.num_episodes):
             print("\nEpisode %d, Level %d, epsilon = %f" % (i + 1, self.ar.get_current_level(), self.epsilon))
 
-            # Observations during the current level: list of (s, a, r, s', t) tuples
-            obs = []
-
-            # Initialize current episode's return to 0
-            ret = 0
-
-            # Initialize variable to monitor the application's state
-            appl_state = self.ar.get_game_state()
-
-            # Get the environment state (preprocessed screenshot) and save it
-            env_state = self.get_state()
-
-            # Try to solve a level and collect observations (actions, environment state, reward)
-            while appl_state == GameState.PLAYING:
-                # Plot the current state
-                # plot_state(env_state)
-
-                # Predict the next action to take, i.e. the best shot, and get estimated value
-                action, val_estimate = self.plan(env_state)
-
-                # Try to plot a saliency map without classes
-                # plot_saliency_map(env_state, self.target_network)
-
-                # Perform shot, observe new environment state, level score and application state
-                next_env_state, score, appl_state = self.shoot(action)
-
-                # Compute reward (to be the number of additional points gained with this shot)
-                reward = score - ret
-
-                # Observe if this level was terminated
-                terminal = not appl_state == GameState.PLAYING
-
-                # Save experienced transition (s, a, r, s', t)
-                obs += [(env_state, action, reward, next_env_state, terminal)]
-
-                # Update return
-                ret = score
-
-                # Update old env_state with new one
-                env_state = next_env_state
-
-            if not (appl_state == GameState.WON or appl_state == GameState.LOST):
-                print("Error: unexpected application state. The application state is neither WON nor LOST. "
-                      "Skipping this training iteration...")
-                break
-
-            # Convert observations list into np.array
-            obs = np.array(obs)
-
-            # If the level is lost, punish the return. In the actual case, reward and return would
-            # be zero, but we grant some "grace" points, so the network can learn even if it constantly looses.
-            if appl_state == GameState.LOST:
-                # Grace points on all the rewards given during this level
-                obs[:, 2] *= self.grace_factor
-
-                # Grace points on return
-                ret *= self.grace_factor
-
-                # add a loss to the ratio
-                win_loss_ratio += [0]
-                print("Level lost.")
-            else:
-                # add a win to the ratio
-                win_loss_ratio += [1]
-                print("Level won!")
-
-            print("Got level score %d." % self.ar.get_current_score())
-
-            # Save the return
+            # Play 1 episode = 1 level and save observations
+            obs, ret, won = self.play_level()
+            self.memory.memorize(obs)
             returns += [ret]
+            win_loss_ratio += won
 
             # Every X episodes, plot informative graphs
             if (i + 1) % 200 == 0:
@@ -257,23 +202,21 @@ class ClientDQNAgent(Thread):
                 plot_priorities(self.memory.get_priorities())
                 plot_scores(np.array(returns) * self.score_normalization)
 
-            # Append observations to experience buffer
-            self.memory.memorize(obs)
+            print("Current RAM usage: %d MB" % (process.memory_info().rss / 1000000))
 
             # Load next level (in advance)
-            self.load_next_level(appl_state)
+            self.load_next_level()
 
-            # Train every train_period levels
+            # Simultaneously, update the network weights every train_period levels to fit experience
             if (i + 1) % self.replay_period == 0:
-                # Update network weights to fit the experience
-                print("\nLearning from experience...")
-                self.learn()
-                print("Done with learning.")
+                learn_thread = Thread(target=self.learn)
+                learn_thread.start()
 
-            # Every X levels save experience
-            if (i + 1) % 5000 == 0:
-                # Save (new) memory into file
-                self.memory.export_experience(overwrite=True)
+            # Save and reload experience to reduce memory load
+            if (i + 1) % 1000 == 0:
+                path = "temp/experience_%s.hdf5" % (i + 1)
+                self.memory.export_experience(experience_path=path, overwrite=True)
+                self.memory.import_experience(experience_path=path)
 
             # Synchronize target and online network every sync_period levels
             if (i + 1) % self.sync_period == 0:
@@ -282,9 +225,82 @@ class ClientDQNAgent(Thread):
             # Cool down: reduce epsilon to reduce randomness (less explore, more exploit)
             self.epsilon *= self.anneal
 
+        print("Playing finished successfully!")
+
+    def play_level(self):
+        # Observations during the current level: list of (s, a, r, s', t) tuples
+        obs = []
+
+        # Initialize current episode's return to 0
+        ret = 0
+
+        # Initialize variable to monitor the application's state
+        appl_state = self.ar.get_game_state()
+
+        # Get the environment state (preprocessed screenshot) and save it
+        env_state = self.get_state()
+
+        # Try to solve a level and collect observations (actions, environment state, reward)
+        while appl_state == GameState.PLAYING:
+            # Plot the current state
+            # plot_state(env_state)
+
+            # Predict the next action to take, i.e. the best shot, and get estimated value
+            action, val_estimate = self.plan(env_state)
+
+            # Try to plot a saliency map without classes
+            # plot_saliency_map(env_state, self.target_network)
+
+            # Perform shot, observe new environment state, level score and application state
+            next_env_state, score, appl_state = self.shoot(action)
+
+            # Compute reward (to be the number of additional points gained with this shot)
+            reward = score - ret
+
+            # Observe if this level was terminated
+            terminal = not appl_state == GameState.PLAYING
+
+            # Save experienced transition (s, a, r, s', t)
+            obs += [(env_state, action, reward, next_env_state, terminal)]
+
+            # Update return
+            ret = score
+
+            # Update old env_state with new one
+            env_state = next_env_state
+
+        if not (appl_state == GameState.WON or appl_state == GameState.LOST):
+            print("Error: unexpected application state. The application state is neither WON nor LOST. "
+                  "Skipping this training iteration...")
+
+        # Convert observations list into np.array
+        obs = np.array(obs)
+
+        # If the level is lost, punish the return. In the actual case, reward and return would
+        # be zero, but we grant some "grace" points, so the network can learn even if it constantly looses.
+        if appl_state == GameState.LOST:
+            # Grace points on all the rewards given during this level
+            obs[:, 2] *= self.grace_factor
+
+            # Grace points on return
+            ret *= self.grace_factor
+
+            # add a loss to the ratio
+            won = [0]
+            print("Level lost.")
+        else:
+            # add a win to the ratio
+            won = [1]
+            print("Level won!")
+
+        print("Got level score %d." % self.ar.get_current_score())
+
+        return obs, ret, won
+
     def learn(self):
         """Updates the online network's weights. This is the actual learning procedure of the agent."""
         # TODO: Make this more efficient (especially for large batches)
+        print("\n\033[94mLearning from experience...\033[0m")
 
         # Obtain a list of useful transitions to learn on
         trans_ids, probabilities = self.memory.recall(self.minibatch, self.alpha)
@@ -345,6 +361,8 @@ class ClientDQNAgent(Thread):
         self.online_network.fit(inputs, targets, epochs=1, verbose=0,
                                 batch_size=self.minibatch,
                                 sample_weight=np.abs(np.multiply(weights, td_errs)))
+
+        print("\033[94mDone with learning.\033[0m")
 
     def plan(self, state):
         """
@@ -447,7 +465,7 @@ class ClientDQNAgent(Thread):
 
         return state
 
-    def load_next_level(self, appl_state):
+    def load_next_level(self):
         """Update the current_level variable and load the next level according to given application state."""
 
         # In any case, pick a random level between 1 and 200
@@ -480,9 +498,8 @@ class ClientDQNAgent(Thread):
 
     def save_model(self, model_path, overwrite=False):
         """Saves the current model weights to a specified export path."""
-
-        # Save the model
         self.online_network.save_weights(model_path, overwrite=overwrite)
+        print("Saved model.")
 
     def restore_model(self, model_path):
         print("Restoring model from '%s'." % model_path)

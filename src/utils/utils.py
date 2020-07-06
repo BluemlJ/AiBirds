@@ -39,23 +39,26 @@ def plot_scores(scores):
     plt.savefig("plots/scores.png")
     plt.show()
 
+
 def plot_win_loss_ratio(list_of_wins):
+    # TODO: make more efficient
     # n = size of chunks - 1
     n = 100
-    chunks = np.array_split(np.array(list_of_wins),n)
-    print(chunks)
-    
+    chunks = np.array_split(np.array(list_of_wins), n)
+    # print(chunks)
+
     # count the winning games per chunk divided by the size
-    ratio = [np.count_nonzero(l == 1)/n for l in chunks]
-    x = [n*(i+1) for i,y in enumerate(ratio)]
+    ratio = [np.count_nonzero(l == 1) / n for l in chunks]
+    x = [n * (i + 1) for i, y in enumerate(ratio)]
     print(ratio)
-    
+
     plt.plot(x, ratio)
     plt.title("Win Loss Ratio")
     plt.xlabel("Episodes")
     plt.ylabel("Percentage")
     plt.axis([None, None, 0, 1])
     plt.show()
+
 
 def plot_state(state):
     # De-normalize state into image
@@ -65,45 +68,47 @@ def plot_state(state):
     plt.imshow(image)
     plt.show()
 
+
 def plot_saliency_map(state, model):
     # NOT FINISHED
     # De-normalize state into the image
     state = np.reshape(state, (124, 124, 3))
     image = (state * 255).astype(np.int)
-    
+
     # Show the image
-    #plt.imshow(image)
-    #plt.show()
-    
+    # plt.imshow(image)
+    # plt.show()
+
     # get the gradients of the last convolutional layer 
     last_conv = model.get_layer('conv2d_3')
-    #TODO get the gradients 
+    # TODO get the gradients
 
     # Global average pooling, returning the pooled gradients as well as the activation maps from the last conv layer
-    pooled_grads = K.mean(grads,axis=(0,1,2))
-    iterate = K.function([model.input],[pooled_grads,last_conv.output[0]])
-    pooled_grads_value,conv_layer_output = iterate([image])
+    pooled_grads = K.mean(grads, axis=(0, 1, 2))
+    iterate = K.function([model.input], [pooled_grads, last_conv.output[0]])
+    pooled_grads_value, conv_layer_output = iterate([image])
 
     # Multiplying the gradients and the activation maps to get importance into them 
     for i in range(512):
-        conv_layer_output[:,:,i] *= pooled_grads_value[i]
-    heatmap = np.mean(conv_layer_output,axis=-1)
+        conv_layer_output[:, :, i] *= pooled_grads_value[i]
+    heatmap = np.mean(conv_layer_output, axis=-1)
 
     # apply reLU so only positive features are displayed
     for x in range(heatmap.shape[0]):
         for y in range(heatmap.shape[1]):
-            heatmap[x,y] = np.max(heatmap[x,y],0)
+            heatmap[x, y] = np.max(heatmap[x, y], 0)
 
     # normalize the heatmap
-    heatmap = np.maximum(heatmap,0)
+    heatmap = np.maximum(heatmap, 0)
     heatmap /= np.max(heatmap)
     plt.imshow(heatmap)
 
     # combine heatmap and input image to get the saliency map and plot it
-    upsample = resize(heatmap, (124,124),preserve_range=True)
+    upsample = resize(heatmap, (124, 124), preserve_range=True)
     plt.imshow(image)
-    plt.imshow(upsample,alpha=0.5)
+    plt.imshow(upsample, alpha=0.5)
     plt.show()
+
 
 def angle_to_vector(alpha):
     rad_shot_angle = np.deg2rad(alpha)

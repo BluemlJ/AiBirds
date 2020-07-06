@@ -16,22 +16,18 @@ def main(*args):
                                minibatch=64,  # 32
                                sync_period=1024,
                                gamma=0.99,
-                               epsilon=1,
+                               epsilon=0.8,
                                anneal=0.9999,
                                dueling=True,  # True
                                latent_dim=512,  # 512
-                               experience_path="data/experience.hdf5")
+                               experience_path="data/tobias.hdf5")
 
-    # agent.memory.load_experience_new("data/experience.hdf5")
-    # agent.restore_model("models/svenja_4")
+    agent.memory.import_experience("data/experience_backup.hdf5")
+    agent.restore_model("models/tobias")
+    # agent.learn_from_experience()
     agent.run()
-    # agent.learn_from_experience(reset_priorities=True)
-    agent.save_model("models/tobias")
+    agent.save_model("models/tobias_2")
     agent.memory.export_experience('data/tobias.hdf5', compress=True)
-    # agent.set_experience(experience_path="data/svenja.bz2")
-    # agent.learn_from_experience(reset_priorities=True)
-    # agent.save_model("models/svenja_4")
-    # agent.memory.export_all_experience()
 
 
 if __name__ == "__main__":
