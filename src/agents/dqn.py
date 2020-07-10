@@ -85,7 +85,7 @@ class ClientDQNAgent(Thread):
         self._optimizer = tf.optimizers.Adam(learning_rate=learning_rate)
         self.num_episodes = num_episodes
         self.replay_period = replay_period  # number of levels between each training of the online network
-        self.grace_factor = 1  # reward function modifier, granting X % points on failed levels
+        self.grace_factor = 0  # reward function modifier, granting X % points on failed levels
         self.score_normalization = 10000
         self.minibatch = minibatch
 
@@ -197,7 +197,7 @@ class ClientDQNAgent(Thread):
             win_loss_ratio += won
 
             # Every X episodes, plot informative graphs
-            if (i + 1) % 200 == 0:
+            if (i + 1) % 500 == 0:
                 plot_win_loss_ratio(win_loss_ratio)
                 plot_priorities(self.memory.get_priorities())
                 plot_scores(np.array(returns) * self.score_normalization)
@@ -459,9 +459,6 @@ class ClientDQNAgent(Thread):
 
         # Convert into unsigned byte
         state = np.expand_dims(scaled.astype(np.uint8), axis=0)
-
-        # Normalize the scaled and cropped image
-        # state = np.expand_dims(scaled.astype(np.float32) / 255, axis=0)
 
         return state
 

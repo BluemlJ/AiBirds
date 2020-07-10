@@ -19,6 +19,8 @@ class ReplayMemory:
         # Path string to location for saving the experience data
         self.experience_path = experience_path
 
+        self.open_file = None
+
         # Load existing experience if override is false (and experience exists)
         if not overwrite:
             if os.path.exists(experience_path):
@@ -31,8 +33,6 @@ class ReplayMemory:
             if os.path.exists(experience_path):
                 print("Overriding previously saved experience at %s." % experience_path)
                 os.remove(experience_path)
-
-        self.open_file = None
 
     def memorize(self, observations):
         """Takes a list of (s, a, r, s', t) tuples."""
@@ -157,14 +157,14 @@ class ReplayMemory:
 
         print("Importing transitions from '%s'..." % experience_path)
 
-        f = h5py.File(experience_path)
+        f = h5py.File(experience_path, mode="a")
         states_pointer = f['states']
         self.states = da.from_array(states_pointer, chunks=(1, 1, self.state_res_per_dim, self.state_res_per_dim, 3))
         self.new_states = np.empty((0, 1, self.state_res_per_dim, self.state_res_per_dim, 3), dtype=np.uint8)
-        self.actions = f['actions'].value
-        self.rewards = f['rewards'].value
-        self.terminals = f['terminals'].value
-        self.priorities = f['priorities'].value
+        self.actions = f['actions'][()]
+        self.rewards = f['rewards'][()]
+        self.terminals = f['terminals'][()]
+        self.priorities = f['priorities'][()]
 
         if self.open_file is not None:
             self.open_file.close()

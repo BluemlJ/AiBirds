@@ -36,27 +36,34 @@ def plot_scores(scores):
     plt.xlabel("Episode")
     plt.ylabel("Score")
     plt.legend()
-    plt.savefig("plots/scores.png")
+    plt.savefig("plots/scores.png", dpi=400)
     plt.show()
 
 
 def plot_win_loss_ratio(list_of_wins):
-    # TODO: make more efficient
-    # n = size of chunks - 1
-    n = 100
-    chunks = np.array_split(np.array(list_of_wins), n)
-    # print(chunks)
+    # Make sure the number of list items is a multiple of 100
+    w1 = 100
+    w2 = 500
+    w3 = 2000
 
-    # count the winning games per chunk divided by the size
-    ratio = [np.count_nonzero(l == 1) / n for l in chunks]
-    x = [n * (i + 1) for i, y in enumerate(ratio)]
-    print(ratio)
+    if len(list_of_wins) > w1:
+        mov_avg_ret = get_moving_avg(list_of_wins, w1)
+        plt.plot(mov_avg_ret, label="Moving average %d" % w1, c='silver')
 
-    plt.plot(x, ratio)
+    if len(list_of_wins) > w2:
+        mov_avg_ret = get_moving_avg(list_of_wins, w2)
+        plt.plot(mov_avg_ret, label="Moving average %d" % w2, c='black')
+
+    if len(list_of_wins) > w3:
+        mov_avg_ret = get_moving_avg(list_of_wins, w3)
+        plt.plot(mov_avg_ret, label="Moving average %d" % w3, c='#009d81')
+
     plt.title("Win Loss Ratio")
     plt.xlabel("Episodes")
     plt.ylabel("Percentage")
     plt.axis([None, None, 0, 1])
+    plt.legend()
+    plt.savefig("plots/win-loss-ratio.png", dpi=400)
     plt.show()
 
 
