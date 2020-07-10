@@ -110,23 +110,19 @@ class ClientDQNAgent(Thread):
     def _build_compile_model(self, latent_dim):
 
         input_frame = Input(shape=(self.state_res_per_dim, self.state_res_per_dim, 3))
-        # action_one_hot = Input(shape=(self.angle_res * self.tap_time_res,))
+
         conv1 = Convolution2D(32, (8, 8), strides=4, kernel_initializer=VarianceScaling(scale=2.), activation='relu',
                               use_bias=False)(input_frame)
-        # tf.keras.layers.Dropout(0.25),
 
         conv2 = Convolution2D(64, (4, 4), strides=2, kernel_initializer=VarianceScaling(scale=2.), activation='relu',
                               use_bias=False)(conv1)
-        # tf.keras.layers.Dropout(0.5),
 
         conv3 = Convolution2D(64, (3, 3), strides=1, kernel_initializer=VarianceScaling(scale=2.), activation='relu',
                               use_bias=False)(conv2)
-        # tf.keras.layers.Dropout(0.5),
 
         conv4 = Convolution2D(latent_dim, (7, 7), strides=1, kernel_initializer=VarianceScaling(scale=2.),
                               activation='relu',
                               use_bias=False)(conv3)
-        # tf.keras.layers.Dropout(0.5),
 
         latent_feature_1 = tf.keras.layers.Flatten(name='latent')(conv4)
 
@@ -192,6 +188,12 @@ class ClientDQNAgent(Thread):
 
             # Play 1 episode = 1 level and save observations
             obs, ret, won = self.play_level()
+
+            # Handle situations where a level destroyed itself with no shots taken
+            if len(obs) == 0:
+                self.load_next_level()
+                continue
+
             self.memory.memorize(obs)
             returns += [ret]
             win_loss_ratio += won
@@ -215,8 +217,11 @@ class ClientDQNAgent(Thread):
             # Save and reload experience to reduce memory load
             if (i + 1) % 1000 == 0:
                 path = "temp/experience_%s.hdf5" % (i + 1)
-                self.memory.export_experience(experience_path=path, overwrite=True)
+                old_path = "temp/experience_%s.hdf5" % i
+                self.memory.export_experience(experience_path=path, overwrite=True, compress=True)
                 self.memory.import_experience(experience_path=path)
+                if os.path.exists(old_path):
+                    os.remove(old_path)
 
             # Synchronize target and online network every sync_period levels
             if (i + 1) % self.sync_period == 0:
@@ -273,6 +278,10 @@ class ClientDQNAgent(Thread):
             print("Error: unexpected application state. The application state is neither WON nor LOST. "
                   "Skipping this training iteration...")
 
+        # In case the level did solve itself by self-destruction
+        if len(obs) == 0:
+            return [], 0, []
+
         # Convert observations list into np.array
         obs = np.array(obs)
 
@@ -300,6 +309,7 @@ class ClientDQNAgent(Thread):
     def learn(self):
         """Updates the online network's weights. This is the actual learning procedure of the agent."""
         # TODO: Make this more efficient (especially for large batches)
+        # TODO: Implement multi-step-learning
         print("\n\033[94mLearning from experience...\033[0m")
 
         # Obtain a list of useful transitions to learn on
@@ -466,7 +476,7 @@ class ClientDQNAgent(Thread):
         """Update the current_level variable and load the next level according to given application state."""
 
         # In any case, pick a random level between 1 and 200
-        next_level = np.random.randint(199) + 1
+        next_level = np.random.randint(1499) + 1
         self.current_level = next_level
 
         self.ar.load_level(next_level)
