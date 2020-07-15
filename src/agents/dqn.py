@@ -57,6 +57,10 @@ class ClientDQNAgent(Thread):
         # Vision for obtaining sling reference point
         self.vision = Vision()
 
+        # Total number of levels used for training and validation
+        self.total_level_number = 2400
+        self.val_level_numbers = self.get_validation_level_numbers()
+
         # Action space parameters
         self.angle_res = 20  # angle resolution: the number of possible (discretized) shot angles
         self.tap_time_res = 10  # tap time resolution: the number of possible tap times
@@ -154,7 +158,7 @@ class ClientDQNAgent(Thread):
         model.compile(loss='huber_loss', optimizer=self._optimizer)
 
         # model.summary()
-        tf.keras.utils.plot_model(model, to_file='plots/model_plot.png', show_shapes=True, show_layer_names=True)
+        # tf.keras.utils.plot_model(model, to_file='plots/model_plot.png', show_shapes=True, show_layer_names=True)
         return model
 
     def run(self):
@@ -184,6 +188,13 @@ class ClientDQNAgent(Thread):
         process = psutil.Process(os.getpid())
 
         for i in range(self.num_episodes):
+            # Perform Validation of the agent every 2000 levels
+            if (i + 1) % 2000 == 0:
+                self.validate()
+
+                # load a new level for regular training
+                self.load_next_level()
+
             print("\nEpisode %d, Level %d, epsilon = %f" % (i + 1, self.ar.get_current_level(), self.epsilon))
 
             # Play 1 episode = 1 level and save observations
@@ -306,6 +317,78 @@ class ClientDQNAgent(Thread):
 
         return obs, ret, won
 
+    def validate(self):
+        """Perform validation of the agent on the validation set. On all validation levels,
+        the agent plays without epsilon and does not learn from the experience."""
+        print("Start validating...")
+
+        # Initialize return list (list of normalized final scores for each level played)
+        returns = []
+        win_loss_ratio = []
+
+        for i in range(len(self.val_level_numbers)):
+            print("Validate level: ", self.val_level_numbers[i])
+            # load next validation level
+            self.ar.load_level(self.val_level_numbers[i])
+            # let the agent play the level
+            ret, won = self.validate_level()
+
+            # check if the level was solved by self-destruction (ret and won are None)
+            if (ret is not None) and (won is not None):
+                returns += [ret]
+                win_loss_ratio += won
+
+        # plot the results
+        plot_win_loss_ratio(win_loss_ratio)
+        plot_scores(np.array(returns) * self.score_normalization)
+        print("Finished validating.")
+
+    def validate_level(self):
+        """Let the agent play one level without epsilon."""
+        # Initialize current level's return to 0
+        score = 0
+
+        # Initialize variable to monitor the application's state
+        appl_state = self.ar.get_game_state()
+
+        # Get the environment state (preprocessed screenshot) and save it
+        env_state = self.get_state()
+
+        # The level might be solved by self-destruction
+        shoot_once = False
+
+        # Try to solve the current level
+        while appl_state == GameState.PLAYING:
+            # Predict the next action to take, i.e. the best shot, and get estimated value
+            action, val_estimate = self.plan(env_state, use_eps=False)
+
+            # Perform shot, observe new environment state, level score and application state
+            env_state, score, appl_state = self.shoot(action)
+
+            # The level wasn't solved by self-destruction
+            shoot_once = True
+
+        if not (appl_state == GameState.WON or appl_state == GameState.LOST):
+            print("Error: unexpected application state. The application state is neither WON nor LOST. "
+                  "Skipping this validation level...")
+
+        # In case the level did solve itself by self-destruction
+        if not shoot_once:
+            print("Level was solved by self-destruction, it will not be used for win-ratio and average points.")
+            return None, None
+
+        # add a win/loss to the ratio depending on the level outcome
+        if appl_state == GameState.LOST:
+            won = [0]
+            print("Level lost.")
+        else:
+            won = [1]
+            print("Level won!")
+
+        print("Got level score %d." % self.ar.get_current_score())
+
+        return score, won
+
     def learn(self):
         """Updates the online network's weights. This is the actual learning procedure of the agent."""
         # TODO: Make this more efficient (especially for large batches)
@@ -374,9 +457,10 @@ class ClientDQNAgent(Thread):
 
         print("\033[94mDone with learning.\033[0m")
 
-    def plan(self, state):
+    def plan(self, state, use_eps=True):
         """
         Given a state of the game, the deep DQN is used to predict a good shot.
+        :param use_eps: If the epsilon factor should be considered or the agent should play optimal
         :return: action, consisting of an index, corresponding to some shot parameters
         """
 
@@ -387,7 +471,7 @@ class ClientDQNAgent(Thread):
         q_vals = self.online_network.predict(norm_state)
 
         # Do epsilon-greedy
-        if np.random.random(1) > self.epsilon:
+        if np.random.random(1) > self.epsilon and use_eps:
             # Determine optimal action as usual
             # Extract the action index which has highest predicted Q-value
             action = q_vals.argmax()
@@ -475,8 +559,10 @@ class ClientDQNAgent(Thread):
     def load_next_level(self):
         """Update the current_level variable and load the next level according to given application state."""
 
-        # In any case, pick a random level between 1 and 200
-        next_level = np.random.randint(1499) + 1
+        # While playing normal, pick a random training level
+        next_level = np.random.randint(self.total_level_number) + 1
+        while next_level in self.val_level_numbers:
+            next_level = np.random.randint(self.total_level_number) + 1
         self.current_level = next_level
 
         self.ar.load_level(next_level)
@@ -518,3 +604,10 @@ class ClientDQNAgent(Thread):
 
     def forget(self):
         self.memory = ReplayMemory(self.memory.experience_path, overwrite=True)
+
+    def get_validation_level_numbers(self):
+        val_numbers = []
+        for i in range(self.total_level_number//100):
+            for j in range(10):
+                val_numbers.append(i * 100 + j + 1)
+        return val_numbers
