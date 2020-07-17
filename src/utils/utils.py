@@ -15,25 +15,12 @@ def get_moving_avg(list, n):
 
 
 def plot_scores(scores):
-    # Window sizes for moving average
-    w1 = 100
-    w2 = 500
-    w3 = 2000
-
-    if len(scores) > w1:
-        mov_avg_ret = get_moving_avg(scores, w1)
-        plt.plot(mov_avg_ret, label="Moving average %d" % w1, c='silver')
-
-    if len(scores) > w2:
-        mov_avg_ret = get_moving_avg(scores, w2)
-        plt.plot(mov_avg_ret, label="Moving average %d" % w2, c='black')
-
-    if len(scores) > w3:
-        mov_avg_ret = get_moving_avg(scores, w3)
-        plt.plot(mov_avg_ret, label="Moving average %d" % w3, c='#009d81', linewidth=1.5)
+    add_moving_avg_plot(scores, 100, 'silver')
+    add_moving_avg_plot(scores, 500, 'black')
+    add_moving_avg_plot(scores, 2000, '#009d81')
 
     plt.title("Scores gathered so far")
-    plt.xlabel("Episode")
+    plt.xlabel("Episodes")
     plt.ylabel("Score")
     plt.legend()
     plt.savefig("plots/scores.png", dpi=400)
@@ -41,29 +28,38 @@ def plot_scores(scores):
 
 
 def plot_win_loss_ratio(list_of_wins):
-    # Make sure the number of list items is a multiple of 100
-    w1 = 100
-    w2 = 500
-    w3 = 2000
+    add_moving_avg_plot(list_of_wins, 100, 'silver')
+    add_moving_avg_plot(list_of_wins, 500, 'black')
+    add_moving_avg_plot(list_of_wins, 2000, '#009d81')
 
-    if len(list_of_wins) > w1:
-        mov_avg_ret = get_moving_avg(list_of_wins, w1)
-        plt.plot(mov_avg_ret, label="Moving average %d" % w1, c='silver')
-
-    if len(list_of_wins) > w2:
-        mov_avg_ret = get_moving_avg(list_of_wins, w2)
-        plt.plot(mov_avg_ret, label="Moving average %d" % w2, c='black')
-
-    if len(list_of_wins) > w3:
-        mov_avg_ret = get_moving_avg(list_of_wins, w3)
-        plt.plot(mov_avg_ret, label="Moving average %d" % w3, c='#009d81')
-
-    plt.title("Win Loss Ratio")
+    plt.title("Win-loss ratio")
     plt.xlabel("Episodes")
     plt.ylabel("Percentage")
     plt.axis([None, None, 0, 1])
     plt.legend()
     plt.savefig("plots/win-loss-ratio.png", dpi=400)
+    plt.show()
+
+
+def add_moving_avg_plot(values, window_size, color):
+    if len(values) > window_size:
+        mov_avg_ret = get_moving_avg(values, window_size)
+        plt.plot(mov_avg_ret, label="Moving average %d" % window_size, c=color)
+
+
+def plot_validation(values, title, ylabel, output_path):
+    number_chunks = int(len(values) / 10)
+    chunked_scores = np.array_split(values, number_chunks)
+    avg_scores = np.sum(chunked_scores, axis=1) / 10
+    average = np.average(values)
+
+    plt.bar(range(number_chunks), avg_scores, color='silver', label="Average per level type")
+    plt.hlines(average, xmin=0, xmax=number_chunks-1, colors=['#009d81'], label="Total average")
+    plt.title(title)
+    plt.xlabel("Level type")
+    plt.ylabel(ylabel)
+    plt.legend()
+    plt.savefig(output_path, dpi=400)
     plt.show()
 
 
@@ -76,7 +72,26 @@ def plot_state(state):
     plt.show()
 
 
-def plot_saliency_map(state, model):
+def angle_to_vector(alpha):
+    rad_shot_angle = np.deg2rad(alpha)
+
+    dx = - np.sin(rad_shot_angle) * 80
+    dy = np.cos(rad_shot_angle) * 80
+
+    return int(dx), int(dy)
+
+
+def plot_priorities(priorities):
+    length = len(priorities)
+    plt.bar(range(length), priorities)
+    plt.title("Transition priorities in experience set")
+    plt.xlabel("Transition")
+    plt.ylabel("Priority")
+    plt.savefig("plots/priorities.png", dpi=800)
+    plt.show()
+
+
+'''def plot_saliency_map(state, model):
     # NOT FINISHED
     # De-normalize state into the image
     state = np.reshape(state, (124, 124, 3))
@@ -114,23 +129,4 @@ def plot_saliency_map(state, model):
     upsample = resize(heatmap, (124, 124), preserve_range=True)
     plt.imshow(image)
     plt.imshow(upsample, alpha=0.5)
-    plt.show()
-
-
-def angle_to_vector(alpha):
-    rad_shot_angle = np.deg2rad(alpha)
-
-    dx = - np.sin(rad_shot_angle) * 80
-    dy = np.cos(rad_shot_angle) * 80
-
-    return int(dx), int(dy)
-
-
-def plot_priorities(priorities):
-    length = len(priorities)
-    plt.bar(range(length), priorities)
-    plt.title("Transition priorities in experience set")
-    plt.xlabel("Transition")
-    plt.ylabel("Priority")
-    plt.savefig("plots/priorities.png", dpi=800)
-    plt.show()
+    plt.show()'''

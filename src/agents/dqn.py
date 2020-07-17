@@ -167,7 +167,7 @@ class ClientDQNAgent(Thread):
 
         # Initialize return list (list of normalized final scores for each level played)
         returns = []
-        win_loss_ratio = []
+        wins = []
 
         # For memory tracking
         process = psutil.Process(os.getpid())
@@ -192,11 +192,11 @@ class ClientDQNAgent(Thread):
 
             self.memory.memorize(obs)
             returns += [ret]
-            win_loss_ratio += won
+            wins += [won]
 
             # Every X episodes, plot informative graphs
             if i % 500 == 0:
-                plot_win_loss_ratio(win_loss_ratio)
+                plot_win_loss_ratio(wins)
                 # plot_priorities(self.memory.get_priorities())  # useful to determine batch size
                 plot_scores(np.array(returns) * SCORE_NORMALIZATION)
 
@@ -250,7 +250,7 @@ class ClientDQNAgent(Thread):
             action, val_estimate = self.plan(env_state, epsilon)
 
             expected_total_return = val_estimate + np.sum(ret)
-            print("Expected total return:", expected_total_return)
+            print("Expected total return: %.3f" % expected_total_return)
 
             # Try to plot a saliency map without classes
             # plot_saliency_map(env_state, self.target_network)
@@ -279,7 +279,9 @@ class ClientDQNAgent(Thread):
 
         # In case the level did solve itself by self-destruction
         if len(obs) == 0:
-            return [], 0, []
+            score = self.ar.get_current_score()
+            ret = score / SCORE_NORMALIZATION
+            return [], ret, None, score
 
         # Convert observations list into np.array
         obs = np.array(obs)
@@ -287,99 +289,23 @@ class ClientDQNAgent(Thread):
         # If the level is lost, punish the return. In the actual case, reward and return would
         # be zero, but we grant some "grace" points, so the network can learn even if it constantly looses.
         if appl_state == GameState.LOST:
-            # Grace points on all the rewards given during this level
-            obs[:, 2] *= grace_factor
+            print("Level lost.")
 
-            # Grace points on return
+            # Grace points on all the rewards and the return in this level
+            obs[:, 2] *= grace_factor
             ret *= grace_factor
 
-            # add a loss to the ratio
-            won = [0]
-            print("Level lost.")
+            won = 0
+            score = 0
         else:
-            # add a win to the ratio
-            won = [1]
             print("Level won!")
+
+            won = 1
+            score = self.ar.get_current_score()
 
         print("Got level score %d." % self.ar.get_current_score())
 
-        return obs, ret, won
-
-    def validate(self):
-        """Perform validation of the agent on the validation set. On all validation levels,
-        the agent plays without epsilon and does not learn from the experience."""
-        print("Start validating...")
-
-        self.ar.set_game_simulation_speed(60)
-
-        # Initialize return list (list of normalized final scores for each level played)
-        returns = []
-        win_loss_ratio = []
-
-        for level in LIST_OF_VALIDATION_LEVELS:
-            print("\nValidating on level", level)
-
-            # load next validation level
-            self.ar.load_level(level)
-
-            # let the agent play the level
-            ret, won = self.validate_level()
-
-            # check if the level was solved by self-destruction (ret and won are None)
-            if (ret is not None) and (won is not None):
-                returns += [ret]
-                win_loss_ratio += won
-
-        # plot the results
-        plot_win_loss_ratio(win_loss_ratio)
-        plot_scores(np.array(returns) * SCORE_NORMALIZATION)
-        print("Finished validating.")
-
-    def validate_level(self):
-        """Let the agent play one level without epsilon."""
-        # Initialize current level's return to 0
-        score = 0
-
-        # Initialize variable to monitor the application's state
-        appl_state = self.ar.get_game_state()
-
-        # Get the environment state (preprocessed screenshot) and save it
-        env_state = self.get_state()
-
-        # The level might be solved by self-destruction
-        shoot_once = False
-
-        # Try to solve the current level
-        while appl_state == GameState.PLAYING:
-            # Predict the next action to take, i.e. the best shot, and get estimated value
-            action, val_estimate = self.plan(env_state)
-
-            # Perform shot, observe new environment state, level score and application state
-            env_state, score, appl_state = self.shoot(action)
-
-            # The level wasn't solved by self-destruction
-            shoot_once = True
-
-        if not (appl_state == GameState.WON or appl_state == GameState.LOST):
-            print("Error: unexpected application state. The application state is neither WON nor LOST. "
-                  "Skipping this validation level...")
-
-        # In case the level did solve itself by self-destruction
-        if not shoot_once:
-            print("Level was solved by self-destruction, it will not be used for win-ratio and average points.")
-            return None, None
-
-        # add a win/loss to the ratio depending on the level outcome
-        if appl_state == GameState.LOST:
-            won = [0]
-            print("Level lost.")
-        else:
-            won = [1]
-            print("Level won!")
-
-        print("Got level score %d." % self.ar.get_current_score())
-
-        return score, won
+        return obs, ret, won, score
 
     def learn(self, gamma, minibatch, alpha=0.7, beta=0.5):
         """Updates the online network's weights. This is the actual learning procedure of the agent.
@@ -457,6 +383,54 @@ class ClientDQNAgent(Thread):
 
         print("\033[94mDone with learning.\033[0m")
 
+    def validate(self, grace_factor=0.25):
+        """Perform validation of the agent on the validation set. On all validation levels,
+        the agent plays without epsilon and does not learn from the experience."""
+        print("Start validating...")
+
+        self.ar.set_game_simulation_speed(60)
+
+        # Initialize return list (list of normalized final scores for each level played)
+        returns = []
+        scores = []
+        wins = []
+
+        for level in LIST_OF_VALIDATION_LEVELS:
+            print("\nValidating on level", level)
+
+            # load next validation level
+            self.ar.load_level(level)
+
+            # let the agent play the level
+            _, ret, won, score = self.play_level(grace_factor=grace_factor, epsilon=None)
+
+            # check if the level was solved by self-destruction (won is None)
+            if won is not None:
+                returns += [ret]
+                scores += [score]
+                wins += [won]
+            else:
+                print("\033[93mLevel did destruct itself... ¯\\_(ツ)_/¯\033[0m")
+                returns += [ret]
+                scores += [score]
+                wins += [1]
+
+        # plot the results
+        plot_validation(returns,
+                        title="Validation returns",
+                        ylabel="Averaged return",
+                        output_path="plots/validation-returns.png")
+        plot_validation(scores,
+                        title="Validation scores",
+                        ylabel="Averaged score",
+                        output_path="plots/validation-scores.png")
+        plot_validation(wins,
+                        title="Validation win-loss ratio",
+                        ylabel="Averaged win proportion",
+                        output_path="plots/validation-win-loss-ratio.png")
+
+        print("Finished validating.")
+
     def plan(self, state, epsilon=None):
         """Given a state of the game, the deep DQN is used to predict a good shot.
 
@@ -486,6 +460,8 @@ class ClientDQNAgent(Thread):
 
     def shoot(self, action):
         """Performs a shot and observes and returns the consequences."""
+        # TODO: use 'score' and 'reward' more consistently
+
         # Get sling reference point coordinates
         sling_x, sling_y = self.vision.get_sling_reference()
 

@@ -5,10 +5,10 @@ def main(*args):
     # Deep Q-Network agent, commented values are used in Nikonova et al.
     agent = dqn.ClientDQNAgent(learning_rate=0.0001,  # 0.0001
                                dueling=True,  # True
-                               latent_dim=1024)  # 512
+                               latent_dim=512)  # 512
 
     # agent.memory.import_experience("temp/experience_46000.hdf5")
-    agent.restore_model("models/link")
+    agent.restore_model("models/tobias_5")
     # agent.learn_from_experience()
     # agent.just_play()
     '''agent.practice(num_episodes=50000,
@@ -20,6 +20,7 @@ def main(*args):
                    replay_period=8,
                    grace_factor=0.25)'''
     agent.validate()
+    agent.just_play()
     # agent.save_model("models/link")
     # agent.memory.export_experience('data/link_46000_no_grace.hdf5', compress=True)
 
