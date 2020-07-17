@@ -5,7 +5,7 @@ import os
 
 
 class ReplayMemory:
-    def __init__(self, state_res_per_dim, experience_path="data/experiences.hdf5", overwrite=False):
+    def __init__(self, state_res_per_dim, import_from=None):
         # Initialize the experience, containing all (s, a, r, s', t) tuples experienced so far
         self.states = da.empty((0, 1, state_res_per_dim, state_res_per_dim, 3), dtype=np.uint8)
         self.new_states = np.empty((0, 1, state_res_per_dim, state_res_per_dim, 3), dtype=np.uint8)
@@ -14,25 +14,19 @@ class ReplayMemory:
         self.terminals = np.empty((0,), dtype='bool')
         self.priorities = np.empty((0,), dtype='float32')
 
+        # State pixel resolution per dimension (width and height)
         self.state_res_per_dim = state_res_per_dim
 
-        # Path string to location for saving the experience data
-        self.experience_path = experience_path
-
+        # Currently opened data files (used by Dask for efficiency)
         self.open_file = None
 
-        # Load existing experience if override is false (and experience exists)
-        if not overwrite:
-            if os.path.exists(experience_path):
-                print("Reloading existing experience.")
-                self.import_experience()
+        if import_from is not None:
+            if os.path.exists(import_from):
+                print("Reloading existing experience from '%s'." % import_from)
+                self.import_experience(experience_path=import_from)
             else:
-                print("No previous experience found at '%s'. A new experience dataset will be created." %
-                      experience_path)
-        else:
-            if os.path.exists(experience_path):
-                print("Overriding previously saved experience at %s." % experience_path)
-                os.remove(experience_path)
+                print("No previous experience found at '%s'. A new experience dataset will be created"
+                      "at this location." % import_from)
 
     def memorize(self, observations):
         """Takes a list of (s, a, r, s', t) tuples."""
@@ -110,12 +104,9 @@ class ReplayMemory:
     def reset_priorities(self):
         self.priorities = 1
 
-    def export_experience(self, experience_path=None, overwrite=False, compress=False):
+    def export_experience(self, experience_path, overwrite=False, compress=False):
         """Exports the current experience dataset (states, actions etc.). The exported data can be compressed
         with gzip via 'compress'."""
-
-        if experience_path is None:
-            experience_path = self.experience_path
 
         while os.path.exists(experience_path) and not overwrite:
             print("There is already an experience dataset at '%s'." % experience_path)
@@ -124,7 +115,7 @@ class ReplayMemory:
 
         if self.open_file is not None:
             while experience_path == self.open_file.filename:
-                print("Warning! You are trying to overwrite the current experience data file. To avoid"
+                print("Warning! You are trying to overwrite the currently active experience data file. To avoid"
                       "memory issues, please specify a different export path:")
                 experience_path = input()
 
@@ -151,10 +142,7 @@ class ReplayMemory:
 
         print("Export finished.")
 
-    def import_experience(self, experience_path=None):
-        if experience_path is None:
-            experience_path = self.experience_path
-
+    def import_experience(self, experience_path):
         print("Importing transitions from '%s'..." % experience_path)
 
         f = h5py.File(experience_path, mode="a")

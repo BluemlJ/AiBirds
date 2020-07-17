@@ -1,31 +1,73 @@
 import json
 import socket
 import cv2
-import tensorflow as tf
-import dask
 import os
 import psutil
 
-from threading import Thread
-from tensorflow import keras
 from tensorflow.keras.layers import Input, Convolution2D, Flatten, Dense, LeakyReLU
 from tensorflow.keras.initializers import VarianceScaling
 from src.client.agent_client import AgentClient, GameState
 from src.utils.utils import *
 from src.utils.Vision import Vision
 from src.utils.ReplayMemory import ReplayMemory
-from operator import itemgetter
-from pympler import tracker
 from threading import Thread
+
+
+def get_validation_level_numbers():
+    val_numbers = []
+    for i in range(TOTAL_LEVEL_NUMBER//100):
+        for j in range(10):
+            val_numbers.append(i * 100 + j + 1)
+    return val_numbers
+
+
+# Global
+TOTAL_LEVEL_NUMBER = 2400  # non-novelty levels
+LIST_OF_VALIDATION_LEVELS = get_validation_level_numbers()  # list of levels used for validation
+
+# Action space
+ANGLE_RESOLUTION = 20  # the number of possible (discretized) shot angles
+TAP_TIME_RESOLUTION = 10  # the number of possible tap times
+MAXIMUM_TAP_TIME = 4000  # maximum tap time (in ms)
+PHI = 10  # dead shot angle bottom (in degrees)
+PSI = 40  # dead shot angle top (in degrees)
+
+# State space
+STATE_PIXEL_RESOLUTION = 124  # width and height of (preprocessed) states
+
+# Reward
+SCORE_NORMALIZATION = 150000
 
 
 class ClientDQNAgent(Thread):
     """Deep Q-Network (DQN) agent for playing Angry Birds"""
 
-    def __init__(self, start_level=1, num_episodes=100000, sim_speed=1, learning_rate=0.0001, replay_period=8,
-                 sync_period=1000, gamma=0.99, epsilon=1, anneal=0.9999, minibatch=32, dueling=True, latent_dim=512,
-                 experience_path="data/experiences.bz2"):
+    def __init__(self, dueling=True, latent_dim=512, learning_rate=0.0001):
         super().__init__()
+
+        self._setup_client_server_connection()
+        self.vision = Vision()  # for obtaining sling reference point
+
+        # To use the dueling networks feature
+        self.dueling = dueling
+
+        # Training optimizer and parameters
+        self._optimizer = tf.optimizers.Adam(learning_rate=learning_rate)
+
+        # Initialize the architecture of the acting and learning part of the DQN (theta)
+        self.online_network = self._build_compile_model(latent_dim)
+
+        # Initialize the architecture of a shadowed (target) version of the DQN (theta-),
+        # which computes the values during learning
+        self.target_network = self.online_network
+
+        # Initialize the memory where all the experience will be memorized
+        self.memory = ReplayMemory(state_res_per_dim=STATE_PIXEL_RESOLUTION)
+
+        print('DQN agent initialized.')
+
+    def _setup_client_server_connection(self):
+        self.id = 28888
 
         with open('./src/client/server_client_config.json', 'r') as config:
             sc_json_config = json.load(config)
@@ -47,73 +89,12 @@ class ClientDQNAgent(Thread):
         except socket.error as e:
             print("Error in client-server communication: " + str(e))
 
-        # General
-        self.id = 28888
-
-        # Game parameters
-        self.current_level = start_level
-        self.sim_speed = sim_speed  # Simulation speed for Science Birds (max. 50)
-
-        # Vision for obtaining sling reference point
-        self.vision = Vision()
-
-        # Total number of levels used for training and validation
-        self.total_level_number = 2400
-        self.val_level_numbers = self.get_validation_level_numbers()
-
-        # Action space parameters
-        self.angle_res = 20  # angle resolution: the number of possible (discretized) shot angles
-        self.tap_time_res = 10  # tap time resolution: the number of possible tap times
-        self.max_t = 4000  # maximum tap time (in ms)
-        self.phi = 10  # dead shot angle bottom
-        self.psi = 40  # dead shot angle top
-
-        # State space resolution (per dimension)
-        self.state_res_per_dim = 124
-
-        # To use the dueling feature
-        self.dueling = dueling
-
-        # Discount factor
-        self.gamma = gamma
-
-        # Prioritized Experience Replay parameters
-        self.alpha = 0.7  # the larger alpha the more prioritization is used
-        self.beta = 0.5  # ? TODO: implement annealing beta
-
-        # Parameters for annealing epsilon greedy policy
-        self.epsilon = epsilon  # starting epsilon value
-        self.anneal = anneal
-
-        # Training optimizer and parameters
-        self._optimizer = tf.optimizers.Adam(learning_rate=learning_rate)
-        self.num_episodes = num_episodes
-        self.replay_period = replay_period  # number of levels between each training of the online network
-        self.grace_factor = 0  # reward function modifier, granting X % points on failed levels
-        self.score_normalization = 10000
-        self.minibatch = minibatch
-
-        # Double Q-Learning
-        self.sync_period = sync_period  # number of levels between each synchronization of online and target network,
-        # the higher the number, the stronger Double Q-Learning and the less overestimation
-
-        # Initialize the architecture of the acting and learning part of the DQN (theta)
-        self.online_network = self._build_compile_model(latent_dim)
-
-        # Initialize the architecture of a shadowed (target) version of the DQN (theta-),
-        # which computes the values during learning
-        self.target_network = self.online_network
-
-        # Initialize the memory where all the experience will be memorized
-        self.memory = ReplayMemory(state_res_per_dim=self.state_res_per_dim,
-                                   overwrite=False,
-                                   experience_path=experience_path)
-
-        print('DQN agent initialized.')
+        self.ar.configure(self.id)
+        self.observer_ar.configure(self.id)
 
     def _build_compile_model(self, latent_dim):
 
-        input_frame = Input(shape=(self.state_res_per_dim, self.state_res_per_dim, 3))
+        input_frame = Input(shape=(STATE_PIXEL_RESOLUTION, STATE_PIXEL_RESOLUTION, 3))
 
         conv1 = Convolution2D(32, (8, 8), strides=4, kernel_initializer=VarianceScaling(scale=2.), activation='relu',
                               use_bias=False)(input_frame)
@@ -128,7 +109,7 @@ class ClientDQNAgent(Thread):
                               activation='relu',
                               use_bias=False)(conv3)
 
-        latent_feature_1 = tf.keras.layers.Flatten(name='latent')(conv4)
+        latent_feature_1 = Flatten(name='latent')(conv4)
 
         # Implementation of the Dueling Network principle
         if self.dueling:
@@ -138,7 +119,7 @@ class ClientDQNAgent(Thread):
 
             # Advantage prediction
             latent_feature_2 = tf.keras.layers.Dense(128, activation='relu', name='latent_A')(latent_feature_1)
-            advantage = Dense(self.angle_res * self.tap_time_res, name='A')(latent_feature_2)
+            advantage = Dense(ANGLE_RESOLUTION * TAP_TIME_RESOLUTION, name='A')(latent_feature_2)
 
             # Q-value = average of both sub-networks
             # q_value = tf.keras.layers.Average(name='Q')([advantage, state_value])
@@ -152,7 +133,7 @@ class ClientDQNAgent(Thread):
             # Direct Q-value prediction
             latent_feature_2 = tf.keras.layers.Dense(128, activation='relu', name='latent_2')(latent_feature_1)
             lrelu_feature = LeakyReLU()(latent_feature_2)
-            q_values = Dense(self.angle_res * self.tap_time_res, name='Q')(lrelu_feature)
+            q_values = Dense(ANGLE_RESOLUTION * TAP_TIME_RESOLUTION, name='Q')(lrelu_feature)
 
         model = tf.keras.Model(inputs=[input_frame], outputs=[q_values])
         model.compile(loss='huber_loss', optimizer=self._optimizer)
@@ -161,44 +142,48 @@ class ClientDQNAgent(Thread):
         # tf.keras.utils.plot_model(model, to_file='plots/model_plot.png', show_shapes=True, show_layer_names=True)
         return model
 
-    def run(self):
-        """The agent's main running routine."""
-        print("Starting DQN agent...")
+    def practice(self, num_episodes, minibatch, sync_period, gamma, epsilon, anneal, replay_period, grace_factor,
+                 sim_speed=60):
+        """The agent's main training routine.
 
-        # Initialization
-        self.ar.configure(self.id)
-        self.observer_ar.configure(self.id)
-        self.ar.set_game_simulation_speed(self.sim_speed)
+        :param num_episodes: Number of episodes to play
+        :param minibatch: Number of transitions to be learned from when learn() is invoked
+        :param sync_period: The number of levels between each synchronization of online and target network. The
+                            higher the number, the stronger Double Q-Learning and the less overestimation.
+        :param gamma: Discount factor
+        :param epsilon: Probability for random shot (epsilon greedy policy)
+        :param anneal: Decrease factor for epsilon
+        :param replay_period: number of levels between each training of the online network
+        :param grace_factor: reward modifier, granting X % points on failed levels
+        :param sim_speed: for Science Birds (max. 60)
+        """
+
+        self.ar.set_game_simulation_speed(sim_speed)
+
+        print("DQN agent starts practicing...")
 
         # Load the first level to train in Science Birds
-        self.ar.load_level(self.current_level)
-
-        # Train the network for num_episodes episodes
-        self.play()
-
-    def play(self):
-        print("Start playing...")
+        self.load_next_level()
 
         # Initialize return list (list of normalized final scores for each level played)
         returns = []
         win_loss_ratio = []
 
         # For memory tracking
-        # mem = tracker.SummaryTracker()
         process = psutil.Process(os.getpid())
 
-        for i in range(self.num_episodes):
+        for i in range(1, num_episodes + 1):
             # Perform Validation of the agent every 2000 levels
-            if (i + 1) % 2000 == 0:
+            if i % 2000 == 0:
                 self.validate()
 
                 # load a new level for regular training
                 self.load_next_level()
 
-            print("\nEpisode %d, Level %d, epsilon = %f" % (i + 1, self.ar.get_current_level(), self.epsilon))
+            print("\nEpisode %d, Level %d, epsilon = %f" % (i, self.ar.get_current_level(), epsilon))
 
             # Play 1 episode = 1 level and save observations
-            obs, ret, won = self.play_level()
+            obs, ret, won = self.play_level(grace_factor, epsilon)
 
             # Handle situations where a level destroyed itself with no shots taken
             if len(obs) == 0:
@@ -210,10 +195,10 @@ class ClientDQNAgent(Thread):
             win_loss_ratio += won
 
             # Every X episodes, plot informative graphs
-            if (i + 1) % 500 == 0:
+            if i % 500 == 0:
                 plot_win_loss_ratio(win_loss_ratio)
-                plot_priorities(self.memory.get_priorities())
-                plot_scores(np.array(returns) * self.score_normalization)
+                # plot_priorities(self.memory.get_priorities())  # useful to determine batch size
+                plot_scores(np.array(returns) * SCORE_NORMALIZATION)
 
             print("Current RAM usage: %d MB" % (process.memory_info().rss / 1000000))
 
@@ -221,29 +206,29 @@ class ClientDQNAgent(Thread):
             self.load_next_level()
 
             # Simultaneously, update the network weights every train_period levels to fit experience
-            if (i + 1) % self.replay_period == 0:
-                learn_thread = Thread(target=self.learn)
+            if i % replay_period == 0:
+                learn_thread = Thread(target=self.learn, args=(gamma, minibatch))
                 learn_thread.start()
 
             # Save and reload experience to reduce memory load
-            if (i + 1) % 1000 == 0:
-                path = "temp/experience_%s.hdf5" % (i + 1)
-                old_path = "temp/experience_%s.hdf5" % i
-                self.memory.export_experience(experience_path=path, overwrite=True, compress=True)
+            if i % 1000 == 0:
+                path = "temp/experience_%s.hdf5" % i
+                old_path = "temp/experience_%s.hdf5" % (i - 1000)
+                self.memory.export_experience(experience_path=path, overwrite=True)
                 self.memory.import_experience(experience_path=path)
                 if os.path.exists(old_path):
                     os.remove(old_path)
 
             # Synchronize target and online network every sync_period levels
-            if (i + 1) % self.sync_period == 0:
+            if i % sync_period == 0:
                 self.target_network = self.online_network
 
             # Cool down: reduce epsilon to reduce randomness (less explore, more exploit)
-            self.epsilon *= self.anneal
+            epsilon *= anneal
 
-        print("Playing finished successfully!")
+        print("Practicing finished successfully!")
 
-    def play_level(self):
+    def play_level(self, grace_factor, epsilon):
         # Observations during the current level: list of (s, a, r, s', t) tuples
         obs = []
 
@@ -262,7 +247,10 @@ class ClientDQNAgent(Thread):
             # plot_state(env_state)
 
             # Predict the next action to take, i.e. the best shot, and get estimated value
-            action, val_estimate = self.plan(env_state)
+            action, val_estimate = self.plan(env_state, epsilon)
+
+            expected_total_return = val_estimate + np.sum(ret)
+            print("Expected total return:", expected_total_return)
 
             # Try to plot a saliency map without classes
             # plot_saliency_map(env_state, self.target_network)
@@ -300,10 +288,10 @@ class ClientDQNAgent(Thread):
         # be zero, but we grant some "grace" points, so the network can learn even if it constantly looses.
         if appl_state == GameState.LOST:
             # Grace points on all the rewards given during this level
-            obs[:, 2] *= self.grace_factor
+            obs[:, 2] *= grace_factor
 
             # Grace points on return
-            ret *= self.grace_factor
+            ret *= grace_factor
 
             # add a loss to the ratio
             won = [0]
@@ -322,14 +310,18 @@ class ClientDQNAgent(Thread):
         the agent plays without epsilon and does not learn from the experience."""
         print("Start validating...")
 
+        self.ar.set_game_simulation_speed(60)
+
         # Initialize return list (list of normalized final scores for each level played)
         returns = []
         win_loss_ratio = []
 
-        for i in range(len(self.val_level_numbers)):
-            print("Validate level: ", self.val_level_numbers[i])
+        for level in LIST_OF_VALIDATION_LEVELS:
+            print("\nValidating on level", level)
+
             # load next validation level
-            self.ar.load_level(self.val_level_numbers[i])
+            self.ar.load_level(level)
+
             # let the agent play the level
             ret, won = self.validate_level()
 
@@ -340,7 +332,7 @@ class ClientDQNAgent(Thread):
 
         # plot the results
         plot_win_loss_ratio(win_loss_ratio)
-        plot_scores(np.array(returns) * self.score_normalization)
+        plot_scores(np.array(returns) * SCORE_NORMALIZATION)
         print("Finished validating.")
 
     def validate_level(self):
@@ -360,7 +352,7 @@ class ClientDQNAgent(Thread):
         # Try to solve the current level
         while appl_state == GameState.PLAYING:
             # Predict the next action to take, i.e. the best shot, and get estimated value
-            action, val_estimate = self.plan(env_state, use_eps=False)
+            action, val_estimate = self.plan(env_state)
 
             # Perform shot, observe new environment state, level score and application state
             env_state, score, appl_state = self.shoot(action)
@@ -389,14 +381,22 @@ class ClientDQNAgent(Thread):
 
         return score, won
 
-    def learn(self):
-        """Updates the online network's weights. This is the actual learning procedure of the agent."""
+    def learn(self, gamma, minibatch, alpha=0.7, beta=0.5):
+        """Updates the online network's weights. This is the actual learning procedure of the agent.
+
+        :param gamma: Discount factor
+        :param minibatch: Number of transitions to be learned from
+        :param alpha: For Prioritized Experience Replay: the larger alpha the stronger prioritization
+        :param beta: ?
+        :return:
+        """
+
         # TODO: Make this more efficient (especially for large batches)
-        # TODO: Implement multi-step-learning
+        # TODO: Implement Monte Carlo return
         print("\n\033[94mLearning from experience...\033[0m")
 
         # Obtain a list of useful transitions to learn on
-        trans_ids, probabilities = self.memory.recall(self.minibatch, self.alpha)
+        trans_ids, probabilities = self.memory.recall(minibatch, alpha)
 
         # Initialize sample weight, input, and targets list
         td_errs = []
@@ -407,7 +407,7 @@ class ClientDQNAgent(Thread):
         exp_len = self.memory.get_length()
 
         # Compute importance-sampling weights and normalize
-        weights = (exp_len * probabilities[trans_ids]) ** (- self.beta)
+        weights = (exp_len * probabilities[trans_ids]) ** (- beta)
         weights /= np.max(weights)
 
         # Get list of transitions
@@ -430,7 +430,7 @@ class ClientDQNAgent(Thread):
                 # Else, use predicted reward of next step
                 next_action = np.argmax(self.online_network.predict(norm_next_state))
                 next_val = self.target_network.predict(norm_next_state)[0][next_action]
-                target_val = reward + self.gamma * next_val
+                target_val = reward + gamma * next_val
 
             td_err = target_val - pred_val
 
@@ -452,15 +452,16 @@ class ClientDQNAgent(Thread):
 
         # Update the online network's weights
         self.online_network.fit(inputs, targets, epochs=1, verbose=0,
-                                batch_size=self.minibatch,
+                                batch_size=minibatch,
                                 sample_weight=np.abs(np.multiply(weights, td_errs)))
 
         print("\033[94mDone with learning.\033[0m")
 
-    def plan(self, state, use_eps=True):
-        """
-        Given a state of the game, the deep DQN is used to predict a good shot.
-        :param use_eps: If the epsilon factor should be considered or the agent should play optimal
+    def plan(self, state, epsilon=None):
+        """Given a state of the game, the deep DQN is used to predict a good shot.
+
+        :param state: the preprocessed, unnormalized state pixel matrix
+        :param epsilon: If given, epsilon greedy policy will be applied, otherwise the agent plans optimally
         :return: action, consisting of an index, corresponding to some shot parameters
         """
 
@@ -471,19 +472,15 @@ class ClientDQNAgent(Thread):
         q_vals = self.online_network.predict(norm_state)
 
         # Do epsilon-greedy
-        if np.random.random(1) > self.epsilon and use_eps:
-            # Determine optimal action as usual
-            # Extract the action index which has highest predicted Q-value
-            action = q_vals.argmax()
-        else:
+        if epsilon is not None and np.random.random(1) < epsilon:
             # Choose action by random
-            action = np.random.randint(self.angle_res * self.tap_time_res)
+            action = np.random.randint(ANGLE_RESOLUTION * TAP_TIME_RESOLUTION)
+        else:
+            # Determine optimal action as usual (index of action with highest value)
+            action = q_vals.argmax()
 
         # Estimate the expected value for this level
         val_estimate = np.amax(q_vals)
-
-        exp_score = int(val_estimate * self.score_normalization + self.ar.get_current_score())
-        print("Expected level score:", exp_score)
 
         return action, val_estimate
 
@@ -493,7 +490,7 @@ class ClientDQNAgent(Thread):
         sling_x, sling_y = self.vision.get_sling_reference()
 
         # Convert action index into aim vector and tap time
-        dx, dy, tap_time = self.action_to_params(action)
+        dx, dy, tap_time = action_to_params(action)
 
         # Perform the shot
         # print("Shooting with dx = %d, dy = %d, tap_time = %d" % (dx, dy, tap_time))
@@ -503,37 +500,12 @@ class ClientDQNAgent(Thread):
         env_state = self.get_state()
 
         # Obtain normalized game score
-        score = self.ar.get_current_score() / self.score_normalization
+        score = self.ar.get_current_score() / SCORE_NORMALIZATION
 
         # Get the application state
         appl_state = self.ar.get_game_state()
 
         return env_state, score, appl_state
-
-    def action_to_params(self, action):
-        """Converts a given action index into corresponding dx, dy, and tap time."""
-
-        # Convert the action index into index pair, indicating angle and tap_time
-        action = np.unravel_index(action, (self.angle_res, self.tap_time_res))
-
-        # Formula parameters, TODO: to be tuned
-        c = 3.6
-        d = 1.3
-
-        # Retrieve shot angle alpha
-        k = action[0] / self.angle_res
-        alpha = ((1 + 0.5 * c) * k - 3 / 2 * c * k ** 2 + c * k ** 3) ** d * (180 - self.phi - self.psi) + self.phi
-
-        # Convert angle into vector
-        dx, dy = angle_to_vector(alpha)
-
-        # Retrieve tap time
-        t = action[1]
-        tap_time = int(t / 10 * self.max_t)
-
-        print("Shooting with: alpha = %d °, tap time = %d ms" % (alpha, tap_time))
-
-        return dx, dy, tap_time
 
     def get_state(self):
         """Fetches the current game screenshot and turns it into a cropped and scaled pixel matrix."""
@@ -549,27 +521,27 @@ class ClientDQNAgent(Thread):
         crop = screenshot[75:400, 40:]
 
         # Rescale the image into a (smaller) square
-        scaled = cv2.resize(crop, (self.state_res_per_dim, self.state_res_per_dim))
+        scaled = cv2.resize(crop, (STATE_PIXEL_RESOLUTION, STATE_PIXEL_RESOLUTION))
 
         # Convert into unsigned byte
         state = np.expand_dims(scaled.astype(np.uint8), axis=0)
 
         return state
 
-    def load_next_level(self):
+    def load_next_level(self, next_level=None):
         """Update the current_level variable and load the next level according to given application state."""
 
-        # While playing normal, pick a random training level
-        next_level = np.random.randint(self.total_level_number) + 1
-        while next_level in self.val_level_numbers:
-            next_level = np.random.randint(self.total_level_number) + 1
-        self.current_level = next_level
+        # While practicing, pick a random training level
+        if next_level is None:
+            next_level = pick_random_level_number()
+            while next_level in LIST_OF_VALIDATION_LEVELS:
+                next_level = pick_random_level_number()
 
         self.ar.load_level(next_level)
 
-    def learn_from_experience(self, reset_priorities=False):
+    def learn_from_experience(self, gamma, minibatch, reset_priorities=False):
         """Tells the agent to learn from the its current experience."""
-        # self.memory = ReplayMemory(override=False, **kwargs)
+        # TODO: Rework this function
 
         if reset_priorities:
             self.memory.reset_priorities()
@@ -587,7 +559,16 @@ class ClientDQNAgent(Thread):
             if i % 100 == 0:
                 plot_priorities(self.memory.get_priorities())
 
-            self.learn()
+            self.learn(gamma, minibatch)
+
+    def just_play(self):
+        print("Just playing around...")
+        self.ar.set_game_simulation_speed(3)
+
+        while True:
+            self.load_next_level()
+            print("\nLevel %d" % self.ar.get_current_level())
+            self.play_level(1, epsilon=None)
 
     def save_model(self, model_path, overwrite=False):
         """Saves the current model weights to a specified export path."""
@@ -599,15 +580,35 @@ class ClientDQNAgent(Thread):
         self.online_network.load_weights(model_path)
         self.target_network = self.online_network
 
-    def set_experience(self, experience_path):
-        self.memory = ReplayMemory(experience_path, overwrite=False)
-
     def forget(self):
-        self.memory = ReplayMemory(self.memory.experience_path, overwrite=True)
+        self.memory = ReplayMemory(STATE_PIXEL_RESOLUTION)
 
-    def get_validation_level_numbers(self):
-        val_numbers = []
-        for i in range(self.total_level_number//100):
-            for j in range(10):
-                val_numbers.append(i * 100 + j + 1)
-        return val_numbers
+
+def action_to_params(action):
+    """Converts a given action index into corresponding dx, dy, and tap time."""
+
+    # Convert the action index into index pair, indicating angle and tap_time
+    action = np.unravel_index(action, (ANGLE_RESOLUTION, TAP_TIME_RESOLUTION))
+
+    # Formula parameters
+    c = 3.6
+    d = 1.3
+
+    # Retrieve shot angle alpha
+    k = action[0] / ANGLE_RESOLUTION
+    alpha = ((1 + 0.5 * c) * k - 3 / 2 * c * k ** 2 + c * k ** 3) ** d * (180 - PHI - PSI) + PHI
+
+    # Convert angle into vector
+    dx, dy = angle_to_vector(alpha)
+
+    # Retrieve tap time
+    t = action[1]
+    tap_time = int(t / 10 * MAXIMUM_TAP_TIME)
+
+    print("Shooting with: alpha = %d °, tap time = %d ms" % (alpha, tap_time))
+
+    return dx, dy, tap_time
+
+
+def pick_random_level_number():
+    return np.random.randint(TOTAL_LEVEL_NUMBER) + 1
