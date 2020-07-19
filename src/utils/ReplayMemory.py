@@ -5,13 +5,15 @@ import os
 
 
 class ReplayMemory:
-    def __init__(self, state_res_per_dim, import_from=None):
+    def __init__(self, state_res_per_dim, score_normalization, import_from=None):
         self.state_res_per_dim = state_res_per_dim
         self._initialize_experience()
         self.gamma = None  # discount factor used for returns list
 
         # State pixel resolution per dimension (width and height)
         self.state_res_per_dim = state_res_per_dim
+
+        self.score_normalization = score_normalization
 
         # Currently opened data files (used by Dask for efficiency)
         self.open_files = []
@@ -35,16 +37,21 @@ class ReplayMemory:
         self.rewards = np.empty((0,), dtype='float32')
         self.returns = np.empty((0,), dtype='float32')  # discounted Monte Carlo returns
 
-    def memorize(self, observations, rewards, won, gamma):
+    def memorize(self, observations, rewards, won, gamma, grace_factor):
         """Saves the observations of a whole episode.
 
         :param observations: list of (state, action, score)
         :param rewards:
         :param won: True if episode was completed successfully, False otherwise
         :param gamma: discount factor
+        :param grace_factor:
         """
 
         episode_length = len(observations)
+
+        # Update rewards if necessary
+        if len(self.rewards) != self.get_length():
+            self.calculate_rewards(grace_factor)
 
         # Update returns with new discount factor, if necessary
         if self.gamma != gamma:
@@ -52,7 +59,7 @@ class ReplayMemory:
 
         obs_states = np.stack(observations[:, 0])
         obs_actions = np.asarray(observations[:, 1], dtype='int')
-        obs_scores = np.asarray(observations[:, 3], dtype='int')
+        obs_scores = np.asarray(observations[:, 2], dtype='int')
         terminals = np.array((episode_length - 1) * [False] + [True], dtype='bool')
         won = np.array(episode_length * [won], dtype='bool')
         max_priority = np.amax(self.get_priorities(), initial=1.0)
@@ -62,17 +69,14 @@ class ReplayMemory:
         for i in reversed(range(episode_length - 1)):
             returns[i] = rewards[i] + gamma * returns[i + 1]
 
-        to_update = ((self.new_states, obs_states),
-                     (self.actions, obs_actions),
-                     (self.rewards, rewards),
-                     (self.scores, obs_scores),
-                     (self.terminals, terminals),
-                     (self.won, won),
-                     (self.priorities, priorities),
-                     (self.returns, returns))
-
-        for (base, new) in to_update:
-            base = np.concatenate((base, new))
+        self.new_states = np.concatenate((self.new_states, obs_states))
+        self.actions = np.concatenate((self.actions, obs_actions))
+        self.rewards = np.concatenate((self.rewards, rewards))
+        self.scores = np.concatenate((self.scores, obs_scores))
+        self.terminals = np.concatenate((self.terminals, terminals))
+        self.won = np.concatenate((self.won, won))
+        self.priorities = np.concatenate((self.priorities, priorities))
+        self.returns = np.concatenate((self.returns, returns))
 
     def recall(self, num_transitions, alpha):
         """Returns a batch of transition IDs, depending on the transitions' priorities.
@@ -105,12 +109,12 @@ class ReplayMemory:
         """Returns an (uncomputed) Dask array, pointing to all experienced states."""
         return da.concatenate([self.states, self.new_states], axis=0)
 
-    def get_transitions(self, trans_ids, score_normalization, grace_factor):
+    def get_transitions(self, trans_ids, grace_factor):
         """Returns an np.array of transitions, selected by their given IDs."""
         print("\033[92mFetching transitions...\033[0m")
 
         if len(self.rewards) != self.get_length():
-            self.calculate_rewards(score_normalization, grace_factor)
+            self.calculate_rewards(grace_factor)
 
         num_trans = len(trans_ids)
 
@@ -126,8 +130,8 @@ class ReplayMemory:
         print("\033[92mReturned %d transitions.\033[0m" % len(trans_ids))
         return states, actions, rewards, next_states, terminals
 
-    def calculate_rewards(self, score_normalization, grace_factor):
-        self.rewards = self.scores / score_normalization
+    def calculate_rewards(self, grace_factor):
+        self.rewards = self.scores / self.score_normalization
         self.rewards[self.won == False] = self.rewards[self.won == False] * grace_factor
 
     def get_returns(self, trans_ids, gamma):
@@ -212,14 +216,18 @@ class ReplayMemory:
 
         print("Export finished.")
 
-    def import_experience(self, experience_path, score_normalization=None, grace_factor=None, gamma=None):
+    def import_experience(self, experience_path, grace_factor=None, gamma=None):
         print("Import started...")
 
         self.close_all_open_files()
         self._initialize_experience()
-        self.add_experience(experience_path, score_normalization, grace_factor, gamma)
+        self.add_experience(experience_path, grace_factor, gamma)
 
-    def add_experience(self, experience_path, score_normalization=None, grace_factor=None, gamma=None):
+    def add_experience(self, experience_path, grace_factor=None, gamma=None):
+        if os.path.exists(experience_path):
+            print("No experience found at '%s'. Continuing without adding experience." % experience_path)
+            return
+
         print("Adding transitions from '%s'..." % experience_path)
 
         f = h5py.File(experience_path, mode="a")
@@ -231,21 +239,17 @@ class ReplayMemory:
         won = f['won'][()]
         priorities = f['priorities'][()]
 
-        da.concatenate([self.states, states])
-
-        to_update = ((self.actions, actions),
-                     (self.scores, scores),
-                     (self.terminals, terminals),
-                     (self.won, won),
-                     (self.priorities, priorities))
-
-        for (base, new) in to_update:
-            base = np.concatenate((base, new))
+        self.states = da.concatenate([self.states, states])
+        self.actions = np.concatenate((self.actions, actions))
+        self.scores = np.concatenate((self.scores, scores))
+        self.terminals = np.concatenate((self.terminals, terminals))
+        self.won = np.concatenate((self.won, won))
+        self.priorities = np.concatenate((self.priorities, priorities))
 
         self.add_open_file(f)
 
-        if score_normalization is not None and grace_factor is not None:
-            self.calculate_rewards(score_normalization, grace_factor)
+        if grace_factor is not None:
+            self.calculate_rewards(grace_factor)
 
         if gamma is not None:
             self.calculate_returns(gamma)

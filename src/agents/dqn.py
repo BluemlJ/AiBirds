@@ -63,7 +63,7 @@ class ClientDQNAgent(Thread):
         self.target_network = self.online_network
 
         # Initialize the memory where all the experience will be memorized
-        self.memory = ReplayMemory(state_res_per_dim=STATE_PIXEL_RESOLUTION)
+        self.memory = ReplayMemory(STATE_PIXEL_RESOLUTION, SCORE_NORMALIZATION)
 
         print('DQN agent initialized.')
 
@@ -192,7 +192,7 @@ class ClientDQNAgent(Thread):
             self.load_next_level()
 
             # Memorize all the observed information
-            self.memory.memorize(obs, rewards, won, gamma)
+            self.memory.memorize(obs, rewards, won, gamma, grace_factor)
             returns += [ret]
             wins += [won]
             scores += [score]
@@ -219,7 +219,7 @@ class ClientDQNAgent(Thread):
 
             # Save model checkpoint
             if i % 1000 == 0:
-                self.save_model(checkpoint_no=i, temp=True)
+                self.save_model(model_path="temp/checkpoint", overwrite=True)
 
             # Save and reload experience to reduce memory load
             if i % 1000 == 0:
@@ -262,7 +262,7 @@ class ClientDQNAgent(Thread):
         while appl_state == GameState.PLAYING:
             # Predict the next action to take, i.e. the best shot, and get estimated value
             action, pred_ret = self.plan(env_state, epsilon)
-            print("Expected total return: %.3f" % pred_ret + score / SCORE_NORMALIZATION)
+            print("Expected total return: %.3f" % (pred_ret + score / SCORE_NORMALIZATION))
 
             # Try to plot a saliency map without classes
             # plot_saliency_map(env_state, self.target_network)
@@ -322,7 +322,7 @@ class ClientDQNAgent(Thread):
 
         # Get list of transitions
         states, actions, rewards, next_states, terminals = \
-            self.memory.get_transitions(trans_ids, SCORE_NORMALIZATION, grace_factor)
+            self.memory.get_transitions(trans_ids, grace_factor)
 
         # Normalize all states and next states
         states = np.reshape(states / 255, (-1, STATE_PIXEL_RESOLUTION, STATE_PIXEL_RESOLUTION, 3))
@@ -569,13 +569,23 @@ class ClientDQNAgent(Thread):
         self.online_network.save_weights(model_path, overwrite=overwrite)
         print("Saved model.")
 
-    def restore_model(self, model_path):
+    def restore_model(self, model_path="temp/checkpoint"):
         print("Restoring model from '%s'." % model_path)
         self.online_network.load_weights(model_path)
         self.target_network = self.online_network
 
+    def save_experience(self, experience_path=None, overwrite=False, compress=False):
+        if experience_path is None:
+            experience_path = "data/" + self.name
+        self.memory.export_experience(experience_path, overwrite, compress)
+
+    def restore_experience(self, experience_path=None, grace_factor=None, gamma=None):
+        if experience_path is None:
+            experience_path = "data/" + self.name
+        self.memory.import_experience(experience_path, grace_factor, gamma)
+
     def forget(self):
-        self.memory = ReplayMemory(STATE_PIXEL_RESOLUTION)
+        self.memory = ReplayMemory(STATE_PIXEL_RESOLUTION, SCORE_NORMALIZATION)
 
 
 def compute_reward(score, won, grace_factor):
@@ -583,7 +593,7 @@ def compute_reward(score, won, grace_factor):
     reward = score / SCORE_NORMALIZATION
     if not won:
         reward *= grace_factor
-    return reward
+    return np.array(reward, dtype='float32')
 
 
 def action_to_params(action):
