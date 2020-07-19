@@ -1,8 +1,8 @@
 import json
 import socket
 import cv2
-import os
 import psutil
+import os
 
 from tensorflow.keras.layers import Input, Convolution2D, Flatten, Dense, LeakyReLU
 from tensorflow.keras.initializers import VarianceScaling
@@ -22,7 +22,7 @@ def get_validation_level_numbers():
 
 
 # Global
-TOTAL_LEVEL_NUMBER = 2400  # non-novelty levels
+TOTAL_LEVEL_NUMBER = 4300  # non-novelty levels
 LIST_OF_VALIDATION_LEVELS = get_validation_level_numbers()  # list of levels used for validation
 
 # Action space
@@ -216,6 +216,7 @@ class ClientDQNAgent(Thread):
             if i % replay_period == 0:
                 learn_thread = Thread(target=self.learn, args=(gamma, minibatch, delta, grace_factor))
                 learn_thread.start()
+                # self.learn(gamma, minibatch, delta, grace_factor)
 
             # Save model checkpoint
             if i % 1000 == 0:
@@ -507,7 +508,6 @@ class ClientDQNAgent(Thread):
     def learn_from_experience(self, num_epochs, gamma, minibatch, delta, grace_factor, sync_period=128,
                               reset_priorities=True):
         """Tells the agent to learn from the its current experience."""
-        # TODO: Test this function
 
         process = psutil.Process(os.getpid())  # for memory tracking
         self.ar.set_game_simulation_speed(60)  # for validation
@@ -538,13 +538,11 @@ class ClientDQNAgent(Thread):
             # Perform Validation of the agent every X levels
             if i % 250 == 0:
                 return_avg, score_avg, win_loss_ratio = self.validate()
-                print("Return average:", return_avg)
-                print("Score average:", score_avg)
-                print("Win-loss ratio:", win_loss_ratio)
                 return_avgs += [return_avg]
-                score_avgs += [score_avgs]
+                score_avgs += [score_avg]
                 win_loss_ratios += [win_loss_ratio]
 
+        print("\n---- Learn Summary ----")
         print("Return averages:", return_avgs)
         print("Score averages:", score_avgs)
         print("Win-loss ratios:", win_loss_ratios)

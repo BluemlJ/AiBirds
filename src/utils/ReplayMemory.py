@@ -18,6 +18,9 @@ class ReplayMemory:
         # Currently opened data files (used by Dask for efficiency)
         self.open_files = []
 
+        # Ignore Warnings caused by the Dask package
+        np.seterr(divide='ignore', invalid='ignore')
+
         if import_from is not None:
             if os.path.exists(import_from):
                 print("Reloading existing experience from '%s'." % import_from)
@@ -103,7 +106,7 @@ class ReplayMemory:
         return trans_ids, probabilities
 
     def get_length(self):
-        return self.get_states().shape[0]
+        return self.won.shape[0]
 
     def get_states(self):
         """Returns an (uncomputed) Dask array, pointing to all experienced states."""
@@ -210,7 +213,7 @@ class ReplayMemory:
                    "priorities": priorities}
 
         if compress:
-            da.to_hdf5(experience_path, dataset, compression="gzip", compression_opts=8)
+            da.to_hdf5(experience_path, dataset, compression="gzip", compression_opts=5)
         else:
             da.to_hdf5(experience_path, dataset)
 
@@ -224,7 +227,7 @@ class ReplayMemory:
         self.add_experience(experience_path, grace_factor, gamma)
 
     def add_experience(self, experience_path, grace_factor=None, gamma=None):
-        if os.path.exists(experience_path):
+        if not os.path.exists(experience_path):
             print("No experience found at '%s'. Continuing without adding experience." % experience_path)
             return
 
