@@ -6,19 +6,15 @@ import os
 
 class ReplayMemory:
     def __init__(self, state_res_per_dim, import_from=None):
-        # Initialize the experience, containing all (s, a, r, s', t) tuples experienced so far
-        self.states = da.empty((0, 1, state_res_per_dim, state_res_per_dim, 3), dtype=np.uint8)
-        self.new_states = np.empty((0, 1, state_res_per_dim, state_res_per_dim, 3), dtype=np.uint8)
-        self.actions = np.empty((0,), dtype='int')
-        self.rewards = np.empty((0,), dtype='float32')
-        self.terminals = np.empty((0,), dtype='bool')
-        self.priorities = np.empty((0,), dtype='float32')
+        self.state_res_per_dim = state_res_per_dim
+        self._initialize_experience()
+        self.gamma = None  # discount factor used for returns list
 
         # State pixel resolution per dimension (width and height)
         self.state_res_per_dim = state_res_per_dim
 
         # Currently opened data files (used by Dask for efficiency)
-        self.open_file = None
+        self.open_files = []
 
         if import_from is not None:
             if os.path.exists(import_from):
@@ -28,21 +24,55 @@ class ReplayMemory:
                 print("No previous experience found at '%s'. A new experience dataset will be created"
                       "at this location." % import_from)
 
-    def memorize(self, observations):
-        """Takes a list of (s, a, r, s', t) tuples."""
+    def _initialize_experience(self):
+        self.states = da.empty((0, 1, self.state_res_per_dim, self.state_res_per_dim, 3), dtype=np.uint8)
+        self.new_states = np.empty((0, 1, self.state_res_per_dim, self.state_res_per_dim, 3), dtype=np.uint8)
+        self.actions = np.empty((0,), dtype='int')
+        self.scores = np.empty((0,), dtype='int')
+        self.terminals = np.empty((0,), dtype='bool')
+        self.won = np.empty((0,), dtype='bool')
+        self.priorities = np.empty((0,), dtype='float32')
+        self.rewards = np.empty((0,), dtype='float32')
+        self.returns = np.empty((0,), dtype='float32')  # discounted Monte Carlo returns
+
+    def memorize(self, observations, rewards, won, gamma):
+        """Saves the observations of a whole episode.
+
+        :param observations: list of (state, action, score)
+        :param rewards:
+        :param won: True if episode was completed successfully, False otherwise
+        :param gamma: discount factor
+        """
+
+        episode_length = len(observations)
+
+        # Update returns with new discount factor, if necessary
+        if self.gamma != gamma:
+            self.calculate_returns(gamma)
 
         obs_states = np.stack(observations[:, 0])
         obs_actions = np.asarray(observations[:, 1], dtype='int')
-        obs_rewards = np.asarray(observations[:, 2], dtype='float32')
-        terminals = np.array((len(observations) - 1) * [False] + [True], dtype='bool')
+        obs_scores = np.asarray(observations[:, 3], dtype='int')
+        terminals = np.array((episode_length - 1) * [False] + [True], dtype='bool')
+        won = np.array(episode_length * [won], dtype='bool')
         max_priority = np.amax(self.get_priorities(), initial=1.0)
-        priorities = np.asarray(len(observations) * [max_priority], dtype='float32')
+        priorities = np.asarray(episode_length * [max_priority], dtype='float32')
+        returns = np.empty((episode_length,), dtype='float32')
+        returns[-1] = rewards[-1]
+        for i in reversed(range(episode_length - 1)):
+            returns[i] = rewards[i] + gamma * returns[i + 1]
 
-        self.new_states = np.concatenate((self.new_states, obs_states), axis=0)
-        self.actions = np.concatenate((self.actions, obs_actions), axis=0)
-        self.rewards = np.concatenate((self.rewards, obs_rewards), axis=0)
-        self.terminals = np.concatenate((self.terminals, terminals), axis=0)
-        self.priorities = np.concatenate((self.priorities, priorities), axis=0)
+        to_update = ((self.new_states, obs_states),
+                     (self.actions, obs_actions),
+                     (self.rewards, rewards),
+                     (self.scores, obs_scores),
+                     (self.terminals, terminals),
+                     (self.won, won),
+                     (self.priorities, priorities),
+                     (self.returns, returns))
+
+        for (base, new) in to_update:
+            base = np.concatenate((base, new))
 
     def recall(self, num_transitions, alpha):
         """Returns a batch of transition IDs, depending on the transitions' priorities.
@@ -75,9 +105,12 @@ class ReplayMemory:
         """Returns an (uncomputed) Dask array, pointing to all experienced states."""
         return da.concatenate([self.states, self.new_states], axis=0)
 
-    def get_transitions(self, trans_ids):
+    def get_transitions(self, trans_ids, score_normalization, grace_factor):
         """Returns an np.array of transitions, selected by their given IDs."""
         print("\033[92mFetching transitions...\033[0m")
+
+        if len(self.rewards) != self.get_length():
+            self.calculate_rewards(score_normalization, grace_factor)
 
         num_trans = len(trans_ids)
 
@@ -90,10 +123,43 @@ class ReplayMemory:
         # If terminal == True, next_state remains zero matrix
         next_states[terminals == False] = self.get_states()[trans_ids[terminals == False] + 1].compute()
 
-        transitions = list(zip(states, actions, rewards, next_states, terminals))
-
         print("\033[92mReturned %d transitions.\033[0m" % len(trans_ids))
-        return transitions
+        return states, actions, rewards, next_states, terminals
+
+    def calculate_rewards(self, score_normalization, grace_factor):
+        self.rewards = self.scores / score_normalization
+        self.rewards[self.won == False] = self.rewards[self.won == False] * grace_factor
+
+    def get_returns(self, trans_ids, gamma):
+        """Returns a list of returns for a given list of transition IDs."""
+        # Update returns list if necessary
+        if self.gamma != gamma or len(self.returns) != self.get_length():
+            self.calculate_returns(gamma)
+
+        return self.returns[trans_ids]
+
+    def calculate_returns(self, gamma):
+        """Completely (re)calculates the returns list."""
+        self.gamma = gamma
+        self.returns = np.empty((self.get_length(),), dtype='float32')
+
+        # Set return of all terminal transitions to their reward
+        episode_iterators = np.where(self.terminals == True)[0]
+        self.returns[episode_iterators] = self.rewards[episode_iterators]
+
+        # Move iterators down by one transition
+        episode_iterators -= 1
+
+        # Remove all iterators which point at the last transition of the previous episode
+        episode_iterators = episode_iterators[self.terminals[episode_iterators] == False]
+
+        while len(episode_iterators) > 0:
+            # Set returns inductively
+            self.returns[episode_iterators] = self.rewards[episode_iterators] + \
+                                            gamma * self.returns[episode_iterators + 1]
+
+            episode_iterators -= 1
+            episode_iterators = episode_iterators[self.terminals[episode_iterators] == False]
 
     def get_priorities(self):
         return self.priorities
@@ -101,8 +167,11 @@ class ReplayMemory:
     def set_priority(self, trans_id, priority):
         self.priorities[trans_id] = priority
 
+    def set_priorities(self, trans_ids, priorities):
+        self.priorities[trans_ids] = priorities
+
     def reset_priorities(self):
-        self.priorities = 1
+        self.priorities = np.ones((self.get_length(),), dtype='float32')
 
     def export_experience(self, experience_path, overwrite=False, compress=False):
         """Exports the current experience dataset (states, actions etc.). The exported data can be compressed
@@ -113,11 +182,10 @@ class ReplayMemory:
             print("Please enter a different path:")
             experience_path = input()
 
-        if self.open_file is not None:
-            while experience_path == self.open_file.filename:
-                print("Warning! You are trying to overwrite the currently active experience data file. To avoid"
-                      "memory issues, please specify a different export path:")
-                experience_path = input()
+        while not self.safe_to_write_at(experience_path):
+            print("Warning! You are trying to overwrite a currently active experience data file. To avoid"
+                  "memory issues, please specify a different export path:")
+            experience_path = input()
 
         if overwrite and os.path.exists(experience_path):
             os.remove(experience_path)
@@ -125,14 +193,16 @@ class ReplayMemory:
         print("Exporting %d transitions..." % self.get_length())
 
         actions = da.from_array(self.actions, chunks=1)
-        rewards = da.from_array(self.rewards, chunks=1)
+        scores = da.from_array(self.scores, chunks=1)
         terminals = da.from_array(self.terminals, chunks=1)
+        won = da.from_array(self.won, chunks=1)
         priorities = da.from_array(self.priorities, chunks=1)
 
         dataset = {"states": self.get_states(),
                    "actions": actions,
-                   "rewards": rewards,
+                   "scores": scores,
                    "terminals": terminals,
+                   "won": won,
                    "priorities": priorities}
 
         if compress:
@@ -142,20 +212,56 @@ class ReplayMemory:
 
         print("Export finished.")
 
-    def import_experience(self, experience_path):
-        print("Importing transitions from '%s'..." % experience_path)
+    def import_experience(self, experience_path, score_normalization=None, grace_factor=None, gamma=None):
+        print("Import started...")
+
+        self.close_all_open_files()
+        self._initialize_experience()
+        self.add_experience(experience_path, score_normalization, grace_factor, gamma)
+
+    def add_experience(self, experience_path, score_normalization=None, grace_factor=None, gamma=None):
+        print("Adding transitions from '%s'..." % experience_path)
 
         f = h5py.File(experience_path, mode="a")
         states_pointer = f['states']
-        self.states = da.from_array(states_pointer, chunks=(1, 1, self.state_res_per_dim, self.state_res_per_dim, 3))
-        self.new_states = np.empty((0, 1, self.state_res_per_dim, self.state_res_per_dim, 3), dtype=np.uint8)
-        self.actions = f['actions'][()]
-        self.rewards = f['rewards'][()]
-        self.terminals = f['terminals'][()]
-        self.priorities = f['priorities'][()]
+        states = da.from_array(states_pointer, chunks=(1, 1, self.state_res_per_dim, self.state_res_per_dim, 3))
+        actions = f['actions'][()]
+        scores = f['scores'][()]
+        terminals = f['terminals'][()]
+        won = f['won'][()]
+        priorities = f['priorities'][()]
 
-        if self.open_file is not None:
-            self.open_file.close()
-        self.open_file = f
+        da.concatenate([self.states, states])
 
-        print("Imported %d transitions." % self.get_length())
+        to_update = ((self.actions, actions),
+                     (self.scores, scores),
+                     (self.terminals, terminals),
+                     (self.won, won),
+                     (self.priorities, priorities))
+
+        for (base, new) in to_update:
+            base = np.concatenate((base, new))
+
+        self.add_open_file(f)
+
+        if score_normalization is not None and grace_factor is not None:
+            self.calculate_rewards(score_normalization, grace_factor)
+
+        if gamma is not None:
+            self.calculate_returns(gamma)
+
+        print("Added %d transitions." % len(states))
+
+    def add_open_file(self, f):
+        self.open_files += [f]
+
+    def close_all_open_files(self):
+        for f in self.open_files:
+            f.close()
+        self.open_files = []
+
+    def safe_to_write_at(self, path):
+        for f in self.open_files:
+            if path == f.filename:
+                return False
+        return True

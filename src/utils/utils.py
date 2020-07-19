@@ -14,16 +14,16 @@ def get_moving_avg(list, n):
     return mov_avg
 
 
-def plot_scores(scores):
-    add_moving_avg_plot(scores, 100, 'silver')
-    add_moving_avg_plot(scores, 500, 'black')
-    add_moving_avg_plot(scores, 2000, '#009d81')
+def plot_moving_average(values, title, ylabel, output_path):
+    add_moving_avg_plot(values, 100, 'silver')
+    add_moving_avg_plot(values, 500, 'black')
+    add_moving_avg_plot(values, 2000, '#009d81')
 
-    plt.title("Scores gathered so far")
+    plt.title(title)
     plt.xlabel("Episodes")
-    plt.ylabel("Score")
+    plt.ylabel(ylabel)
     plt.legend()
-    plt.savefig("plots/scores.png", dpi=400)
+    plt.savefig(output_path, dpi=400)
     plt.show()
 
 
