@@ -1,6 +1,6 @@
 # AiBirds
 
-The idea of this project is to write a "Deep Reinforcement Learning" agent to play Angry Birds. 
+The idea of this project is to write a deep reinforcement learning (DRL) agent to play Angry Birds.
 The idea originated from the [Angry Birds AI Competition](http://aibirds.org/).
 
 <p align="center">
@@ -38,7 +38,7 @@ The idea originated from the [Angry Birds AI Competition](http://aibirds.org/).
 ### Some helpful improvements
 * generate more levels to train on to stop the agent from remembering all levels
 * increase the speed to maximize the learning process
-* 
+
 
 ## Key Features
 * Deep Q Network with following improvements
