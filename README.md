@@ -67,7 +67,7 @@ My solution was to start ScienceBirds with the language en_US.UTF-8 so that unit
 
 + The team behind [Science Birds](https://gitlab.com/aibirds/sciencebirdsframework) for a good framework
 
-## Bibligraphy
+## Bibliography
 * [The Angry Birds AI Competition](https://www.aaai.org/ojs/index.php/aimagazine/article/view/2588)
 * [Rainbow DQN](https://arxiv.org/pdf/1710.02298.pdf)
 * [Deep Q-Network for Angry Birds](https://arxiv.org/pdf/1910.01806.pdf)
