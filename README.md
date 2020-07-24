@@ -1,4 +1,8 @@
 # AiBirds
+
+The idea of this project is to write a "Deep Reinforcement Learning" agent to play Angry Birds. 
+The idea originated from the [Angry Birds AI Competition](http://aibirds.org/).
+
 <p align="center">
   <a href="#installation">Installation</a> •
   <a href="#usage">Usage</a> •
@@ -9,11 +13,9 @@
   <a href="#license">License</a>
 </p>
 
-The idea behind this project is to write a "Deep Reinforcement Learning" agent to play Angry Birds. The idea originated from the [Angry Birds AI Competition](http://aibirds.org/).
-
 ## Installation
 * Download and install the [Science Bird Framework](https://gitlab.com/aibirds/sciencebirdsframework)
- * we recommend to test the framework with the native agent to check installation
+	* we recommend to test the framework with the native agent to check installation
 * Install the requirements 
 * Update the src folder with our src folder
 * Update the main.py to start the new dqn agent.
@@ -33,14 +35,18 @@ The idea behind this project is to write a "Deep Reinforcement Learning" agent t
 
 <code>python3 main.py</code>
 
+### Some helpful improvements
+* generate more levels to train on to stop the agent from remembering all levels
+* increase the speed to maximize the learning process
+* 
 
 ## Key Features
 * Deep Q Network with following improvements
- * Annealing epsilon-Greedy Policy
- * Dueling Networks
- * Prioritized Replay
- * Double Q-Learning
- * Multi-step Learning
+	* Annealing epsilon-Greedy Policy
+	* Dueling Networks
+	* Prioritized Replay
+	* Double Q-Learning
+	* Multi-step Learning
 
 ## Contributing
 
@@ -49,6 +55,12 @@ The idea behind this project is to write a "Deep Reinforcement Learning" agent t
 3. Commit your changes: `git commit -am 'Add some feature'`
 4. Push to the branch: `git push origin my-new-feature`
 5. Submit a pull request :D
+
+## Troubleshooting
+
+### System language problems (especially for german contributors)
+The problem looks like the objects didn't spawn but the actual problem is that the objects did spawn out of the level boundaries. The reason for this turned out to be the language configuration of the system. In my case the system language is de_DE and for this, the decimal point is not a point but a comma (e.g. 2,7). The problem is that unity3D uses the system configuration for their coordination system and coordinates like x=2.5, y=8.4 could not be interpreted correctly.
+My solution was to start ScienceBirds with the language en_US.UTF-8 so that unity3D uses points for floats instead of commas.
 
 
 ## Acknowledgements
@@ -62,5 +74,4 @@ The idea behind this project is to write a "Deep Reinforcement Learning" agent t
 * ...
 
 ## License
-see liecense file
-[![License](https://poser.pugx.org/aimeos/aimeos-typo3/license.svg)](https://packagist.org/packages/aimeos/aimeos-typo3)
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
