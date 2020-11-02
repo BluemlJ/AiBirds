@@ -1,129 +1,99 @@
-import json
-import socket
-import cv2
-import psutil
+import keras
 import os
+import time
+import psutil
 
-from tensorflow.keras.layers import Input, Convolution2D, Flatten, Dense, LeakyReLU
-from tensorflow.keras.initializers import VarianceScaling
-from src.client.agent_client import AgentClient, GameState
+import tensorflow as tf
+
 from src.utils.utils import *
-from src.utils.Vision import Vision
-from src.utils.ReplayMemory import ReplayMemory
-from threading import Thread
+from src.utils.mem import ReplayMemory
+from src.agents.nns import *
+
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+
+gpus = tf.config.experimental.list_physical_devices('GPU')
+memory_config = [tf.config.experimental.VirtualDeviceConfiguration(memory_limit=2048)]
+tf.config.experimental.set_virtual_device_configuration(gpus[0], memory_config)
+
+# Miscellaneous
+PLOT_PERIOD = 5000  # number of transitions between each learning statistics plot
+CHECKPOINT_SAVE_PERIOD = 5000
 
 
-def get_validation_level_numbers():
-    val_numbers = []
-    for i in range(TOTAL_LEVEL_NUMBER // 100):
-        for j in range(10):
-            val_numbers.append(i * 100 + j + 1)
-    return val_numbers
+class TFDQNAgent:
+    """Deep Q-Network (DQN) agent for playing Tetris, Snake or other games"""
 
-
-# Global
-TOTAL_LEVEL_NUMBER = 4300  # non-novelty levels
-LIST_OF_VALIDATION_LEVELS = get_validation_level_numbers()  # list of levels used for validation
-
-# Action space
-ANGLE_RESOLUTION = 20  # the number of possible (discretized) shot angles
-TAP_TIME_RESOLUTION = 10  # the number of possible tap times
-MAXIMUM_TAP_TIME = 4000  # maximum tap time (in ms)
-PHI = 10  # dead shot angle bottom (in degrees)
-PSI = 40  # dead shot angle top (in degrees)
-
-# State space
-STATE_PIXEL_RESOLUTION = 124  # width and height of (preprocessed) states
-
-# Reward
-SCORE_NORMALIZATION = 150000
-
-
-class ClientDQNAgent(Thread):
-    """Deep Q-Network (DQN) agent for playing Angry Birds"""
-
-    def __init__(self, name, dueling=True, latent_dim=512, learning_rate=0.0001):
-        super().__init__()
+    def __init__(self, env, num_parallel_envs, name, use_dueling=True, use_double=True,
+                 latent_dim=64, latent_a_dim=64, latent_v_dim=64,
+                 learning_rate=0.0001, obs_buf_size=100, exp_buf_size=10000, **kwargs):
+        """
+        :param env: The environment in which the agent acts
+        :param num_parallel_envs: The number of environments which are executed simultaneously
+        :param name: A string identifying the agent in file names
+        :param use_dueling: If True the Dueling Networks extension is used
+        :param use_double: If True the Double Q-Learning extension is used
+        :param latent_dim: Width of the main latent layer (first layer after conv layers)
+        :param latent_a_dim: Width of the latent layer of the advantage network from Dueling Networks
+        :param latent_v_dim: Width of the latent layer of the state-value network from Dueling Networks
+        :param learning_rate: The higher the faster but more unstable the agent learns
+        :param kwargs: Arguments for the used environment (e.g., height and width)
+        """
 
         self.name = name
-        self._setup_client_server_connection()
-        self.vision = Vision()  # for obtaining sling reference point
+        self.num_par_envs = num_parallel_envs
 
-        # To use the dueling networks feature
-        self.dueling = dueling
+        self.env_type = env
+        self.env = None
+        self.env_args = kwargs
+        self.image_state_shape = None
+        self.numerical_state_shape = None
+        self.num_actions = None
 
-        # Training optimizer and parameters
+        self.setup_env(num_parallel_envs)
+
+        self.out_path = self.setup_out_path()
+        self.check_for_existing_model()
+
+        self.stats = Statistics()  # Information collected over the course of training
+
+        # Set wanted features
+        self.dueling = use_dueling
+        self.double = use_double
+
+        # Training hyperparameters
+        self.latent_dim = latent_dim
+        self.latent_a_dim = latent_a_dim
+        self.latent_v_dim = latent_v_dim
         self._optimizer = tf.optimizers.Adam(learning_rate=learning_rate)
+        self.training_loss_fn = keras.losses.MeanSquaredError(reduction=tf.keras.losses.Reduction.NONE)
+        self.training_loss_metric = keras.metrics.MeanSquaredError()
 
         # Initialize the architecture of the acting and learning part of the DQN (theta)
-        self.online_network = self._build_compile_model(latent_dim)
+        self.inputs, latent = get_input_model(self.env, self.latent_dim)
+        self.outputs = None
+        self.online_network = self._build_compile_model(latent)
+        self.target_network = None
+        self.init_target_network()
 
-        # Initialize the architecture of a shadowed (target) version of the DQN (theta-),
-        # which computes the values during learning
-        self.target_network = self.online_network
+        self.obs_buf_size = obs_buf_size
+        self.exp_buf_size = exp_buf_size
 
-        # Initialize the memory where all the experience will be memorized
-        self.memory = ReplayMemory(STATE_PIXEL_RESOLUTION, SCORE_NORMALIZATION)
+        self.memory = None
 
         print('DQN agent initialized.')
 
-    def _setup_client_server_connection(self):
-        self.id = 28888
-
-        with open('./src/client/server_client_config.json', 'r') as config:
-            sc_json_config = json.load(config)
-        self.ar = AgentClient(**sc_json_config[0])
-
-        with open('./src/client/server_observer_client_config.json', 'r') as observer_config:
-            observer_sc_json_config = json.load(observer_config)
-        self.observer_ar = AgentClient(**observer_sc_json_config[0])
-
-        print("Connecting agent to server...")
-        try:
-            self.ar.connect_to_server()
-        except socket.error as e:
-            print("Error in client-server communication: " + str(e))
-
-        print("Connecting observer agent to server...")
-        try:
-            self.observer_ar.connect_to_server()
-        except socket.error as e:
-            print("Error in client-server communication: " + str(e))
-
-        self.ar.configure(self.id)
-        self.observer_ar.configure(self.id)
-
-    def _build_compile_model(self, latent_dim):
-
-        input_frame = Input(shape=(STATE_PIXEL_RESOLUTION, STATE_PIXEL_RESOLUTION, 3))
-
-        conv1 = Convolution2D(32, (8, 8), strides=4, kernel_initializer=VarianceScaling(scale=2.), activation='relu',
-                              use_bias=False)(input_frame)
-
-        conv2 = Convolution2D(64, (4, 4), strides=2, kernel_initializer=VarianceScaling(scale=2.), activation='relu',
-                              use_bias=False)(conv1)
-
-        conv3 = Convolution2D(64, (3, 3), strides=1, kernel_initializer=VarianceScaling(scale=2.), activation='relu',
-                              use_bias=False)(conv2)
-
-        conv4 = Convolution2D(latent_dim, (7, 7), strides=1, kernel_initializer=VarianceScaling(scale=2.),
-                              activation='relu',
-                              use_bias=False)(conv3)
-
-        latent_feature_1 = Flatten(name='latent')(conv4)
-
+    def _build_compile_model(self, latent):
         # Implementation of the Dueling Network principle
         if self.dueling:
             # State value prediction
-            latent_feature_2 = Dense(512, activation='relu', name='latent_V')(latent_feature_1)
-            state_value = Dense(1, name='V')(latent_feature_2)
+            latent_v = Dense(self.latent_v_dim, name='latent_V', activation="relu")(latent)
+            state_value = Dense(1, name='V')(latent_v)
 
             # Advantage prediction
-            latent_feature_2 = tf.keras.layers.Dense(128, activation='relu', name='latent_A')(latent_feature_1)
-            advantage = Dense(ANGLE_RESOLUTION * TAP_TIME_RESOLUTION, name='A')(latent_feature_2)
+            latent_a = Dense(self.latent_a_dim, name='latent_A', activation="relu")(latent)
+            advantage = Dense(self.num_actions, name='A')(latent_a)
 
-            # Q-value = average of both sub-networks
-            # q_value = tf.keras.layers.Average(name='Q')([advantage, state_value])
+            # Q(s, a) = V(s) + A(s, a) - A_mean(s, a)
             q_values = tf.add(state_value,
                               tf.subtract(advantage, tf.reduce_mean(advantage, axis=1,
                                                                     keepdims=True,
@@ -132,187 +102,189 @@ class ClientDQNAgent(Thread):
                               name='Q')
         else:
             # Direct Q-value prediction
-            latent_feature_2 = tf.keras.layers.Dense(128, activation='relu', name='latent_2')(latent_feature_1)
+            latent_feature_2 = tf.keras.layers.Dense(128, name='latent_2')(latent)
             lrelu_feature = LeakyReLU()(latent_feature_2)
-            q_values = Dense(ANGLE_RESOLUTION * TAP_TIME_RESOLUTION, name='Q')(lrelu_feature)
+            q_values = Dense(self.num_actions, name='Q')(lrelu_feature)
 
-        model = tf.keras.Model(inputs=[input_frame], outputs=[q_values])
+        self.outputs = [q_values]
+
+        model = tf.keras.Model(inputs=self.inputs, outputs=self.outputs)
         model.compile(loss='huber_loss', optimizer=self._optimizer)
 
-        # model.summary()
-        # tf.keras.utils.plot_model(model, to_file='plots/model_plot.png', show_shapes=True, show_layer_names=True)
+        model.summary()
+        # the following needs separate GraphViz installation from https://graphviz.gitlab.io/download/
+        # this helped for GraphViz bugfix: https://datascience.stackexchange.com/questions/74500
+        tf.keras.utils.plot_model(model, to_file=self.out_path + 'model_plot.png', show_shapes=True,
+                                  show_layer_names=True)
         return model
 
-    def practice(self, num_episodes, minibatch, sync_period, gamma, epsilon, epsilon_anneal, replay_period,
-                 grace_factor, delta, delta_anneal, sim_speed=60):
+    def init_target_network(self):
+        if self.double:
+            # Initialize the architecture of a separate, shadowed (target) version of the DQN (theta-)
+            model = tf.keras.Model(inputs=self.inputs, outputs=self.outputs)
+            model.compile(loss='huber_loss', optimizer=self._optimizer)
+            self.target_network = model
+            self.target_network.set_weights(self.online_network.get_weights())
+        else:
+            self.target_network = self.online_network
+
+    def setup_env(self, num_envs):
+        if self.env is not None:
+            del self.env
+        self.env = self.env_type(**self.env_args, num_par_envs=num_envs)
+        self.image_state_shape, self.numerical_state_shape = self.env.get_state_shape()
+        self.num_actions = self.env.get_number_of_actions()
+
+    def practice(self, num_parallel_steps,
+                 replay_period, replay_size,
+                 batch_size, replay_epochs,
+                 sync_period, gamma,
+                 epsilon, epsilon_anneal, epsilon_min,
+                 delta, delta_anneal,
+                 alpha):
         """The agent's main training routine.
 
-        :param num_episodes: Number of episodes to play
-        :param minibatch: Number of transitions to be learned from when learn() is invoked
+        :param num_parallel_steps: Number of (parallel) transitions to play
+        :param replay_period: number of levels between each training of the online network
+        :param replay_size: Number of transitions to be learned from when learn() is invoked
+        :param batch_size: Size of training batches used in the GPU/CPU to fit the model
+        :param replay_epochs: Number of epochs per replay
         :param sync_period: The number of levels between each synchronization of online and target network. The
                             higher the number, the stronger Double Q-Learning and the less overestimation.
+                            sync_period == 1 means "Double Q-Learning off"
         :param gamma: Discount factor
         :param epsilon: Probability for random shot (epsilon greedy policy)
         :param epsilon_anneal: Decrease factor for epsilon
-        :param replay_period: number of levels between each training of the online network
-        :param grace_factor: reward modifier, granting X % points on failed levels
+        :param epsilon_min: Minimum value for epsilon which is not undercut over thr course of practicing
         :param delta: Trade-off factor between Monte Carlo target return and one-step target return,
                       delta = 1 means MC return, delta = 0 means one-step return
         :param delta_anneal: Decrease factor for delta
-        :param sim_speed: for Science Birds (max. 60)
+        :param alpha: For Prioritized Experience Replay: the larger alpha the stronger prioritization
         """
 
-        self.ar.set_game_simulation_speed(sim_speed)
+        epsilon = Epsilon(value=epsilon, decay=epsilon_anneal, minimum=epsilon_min)
+
+        # Save all hyperparameters in txt file
+        self.write_hyperparams_file(num_parallel_steps, replay_period, replay_size, sync_period, epsilon, alpha,
+                                    gamma, delta, delta_anneal)
+
+        records_file = open(self.out_path + "records.txt", "w+")
+        log_file = open(self.out_path + "log.txt", "a")
+
+        # Initialize the memory where all the experience will be memorized
+        self.memory = ReplayMemory(memory_size=self.exp_buf_size,
+                                   image_state_shape=self.image_state_shape,
+                                   numerical_state_shape=self.numerical_state_shape)
+
+        # Initialize observations buffer with fixed number of transitions per environment
+        obs = Observations(self.obs_buf_size, self.num_par_envs, self.image_state_shape, self.numerical_state_shape)
+
+        # Reset all environments
+        self.env.reset()
+
+        # Initialize auxiliary variables
+        states = self.get_states()
+        scores = np.zeros((self.num_par_envs,), dtype='int')
 
         print("DQN agent starts practicing...")
 
-        # Load the first level to train in Science Birds
-        self.load_next_level()
+        comp_timer = time.time()
 
-        # Initialize return list (list of normalized final scores for each level played)
-        returns = []
-        wins = []
-        scores = []
+        for i in range(1, num_parallel_steps + 1):
+            # Predict the next action to take (move, rotate or do nothing)
+            actions, _ = self.plan(states, epsilon.get_value(), batch_size)
 
-        # For memory tracking
-        process = psutil.Process(os.getpid())
+            # Perform actions, observe new environment state, level score and application state
+            next_states, rewards, next_scores, game_overs, times = self.env.step(actions)
 
-        for i in range(1, num_episodes + 1):
-            print("\nEpisode %d, Level %d, epsilon = %f" % (i, self.ar.get_current_level(), epsilon))
+            # Save observations
+            obs.save_observations(states, actions, next_scores - scores, rewards, times)
 
-            # Play 1 episode = 1 level and save observations
-            obs, rewards, ret, won, score = self.play_level(grace_factor, epsilon)
+            # Update current state and score variables
+            scores = next_scores.copy()
 
-            # Handle situations where a level destroyed itself with no shots taken
-            if len(obs) == 0:
-                self.load_next_level()
-                continue
+            # Handle finished envs
+            fin_env_ids = np.where(game_overs)[0]
 
-            # Load next level (in advance)
-            self.load_next_level()
+            if len(fin_env_ids):
+                # For all finished episodes, save their observations in the replay memory
+                for env_id in fin_env_ids:
+                    obs_states, obs_actions, obs_score_gains, obs_rewards, obs_times = obs.get_observations(env_id)
+                    self.memory.memorize(obs_states, obs_actions, obs_score_gains, obs_rewards, gamma)
 
-            # Memorize all the observed information
-            self.memory.memorize(obs, rewards, won, gamma, grace_factor)
-            returns += [ret]
-            wins += [won]
-            scores += [score]
+                    obs_return = np.sum(obs_rewards)
+                    obs_score = np.sum(obs_score_gains)
+
+                    self.stats.denote_stats(obs_return, obs_score, obs_times[-1])
+
+                # Reset all finished envs and update their corresponding current variables
+                self.env.reset_for(fin_env_ids)
+                scores[fin_env_ids] = 0
+                obs.begin_new_episode_for(fin_env_ids)
+
+            states = self.get_states()
 
             # Every X episodes, plot informative graphs
-            if i % 500 == 0:
-                plot_win_loss_ratio(wins)
-                # plot_priorities(self.memory.get_priorities())  # useful to determine batch size
-                plot_moving_average(np.array(returns),
-                                    title="Returns gathered so far",
-                                    ylabel="Return",
-                                    output_path="plots/returns.png")
-                plot_moving_average(np.array(scores),
-                                    title="Scores gathered so far",
-                                    ylabel="Score",
-                                    output_path="plots/scores.png")
+            if i % PLOT_PERIOD == 0:
+                self.stats.plot_stats(self.out_path, self.memory)
 
-            print("Current RAM usage: %d MB" % (process.memory_info().rss / 1000000))
+            # Update the network weights every train_period levels to fit experience
+            if i % replay_period == 0 and self.memory.get_length() > 0:
+                self.learn(replay_size, gamma=gamma, delta=delta, alpha=alpha,
+                           batch_size=batch_size, epochs=replay_epochs, log_file=log_file)
 
-            # Simultaneously, update the network weights every train_period levels to fit experience
-            if i % replay_period == 0:
-                learn_thread = Thread(target=self.learn, args=(gamma, minibatch, delta, grace_factor))
-                learn_thread.start()
-                # self.learn(gamma, minibatch, delta, grace_factor)
+                # Decrease learning rate if loss changed too little
+                if self.stats.loss_stagnates() and self._optimizer.lr != 0.00001:
+                    self._optimizer.lr.assign(0.00001)
+                    log_text = "\nLearning rate decreased in train cycle %d (episode %d)." % \
+                               (i // replay_period, self.stats.get_length())
+                    log_file.write(log_text)
 
             # Save model checkpoint
-            if i % 1000 == 0:
-                self.save_model(model_path="temp/checkpoint", overwrite=True)
+            if i % CHECKPOINT_SAVE_PERIOD == 0:
+                self.save(overwrite=True, checkpoint=True, checkpoint_no=self.stats.get_length())
 
-            # Save and reload experience to reduce memory load
-            if i % 1000 == 0:
-                path = "temp/experience_%s.hdf5" % i
-                old_path = "temp/experience_%s.hdf5" % (i - 1000)
-                self.memory.export_experience(experience_path=path, overwrite=True)
-                self.memory.import_experience(experience_path=path)
-                if os.path.exists(old_path):
-                    os.remove(old_path)
+            # Cut off old experience to reduce buffer load
+            if self.memory.get_length() > 0.95 * self.exp_buf_size:
+                self.memory.delete_first(n=int(0.2 * self.exp_buf_size))
 
             # Synchronize target and online network every sync_period levels
-            if i % sync_period == 0:
-                self.target_network = self.online_network
+            if self.double and i % sync_period == 0:
+                self.target_network.set_weights(self.online_network.get_weights())
 
-            # Perform Validation of the agent every 2000 levels
-            if i % 2000 == 0:
-                self.validate()
-                self.load_next_level()
+            if i % 100 == 0:
+                self.stats.print_stats(i, num_parallel_steps, self.num_par_envs, time.time() - comp_timer,
+                                       epsilon, records_file)
+                comp_timer = time.time()
 
             # Cool down
-            epsilon *= epsilon_anneal  # reduces randomness (less explore, more exploit)
+            epsilon.decay()  # reduces randomness (less explore, more exploit)
             delta *= delta_anneal  # shifts target return fom MC to one-step
+
+        self.save()
+
+        log_file.close()
+        records_file.close()
 
         print("Practicing finished successfully!")
 
-    def play_level(self, grace_factor, epsilon):
-        # Observations during the current level: list of (state, action, score) tuples
-        obs = []
-
-        # Initialize current episode's score to 0
-        score = 0
-
-        # Initialize variable to monitor the application's state
-        appl_state = self.ar.get_game_state()
-
-        # Get the environment state (preprocessed screenshot)
-        env_state = self.get_state()
-
-        # Try to solve a level and collect observations
-        while appl_state == GameState.PLAYING:
-            # Predict the next action to take, i.e. the best shot, and get estimated value
-            action, pred_ret = self.plan(env_state, epsilon)
-            print("Expected total return: %.3f" % (pred_ret + score / SCORE_NORMALIZATION))
-
-            # Try to plot a saliency map without classes
-            # plot_saliency_map(env_state, self.target_network)
-
-            # Perform shot, observe new environment state, level score and application state
-            next_env_state, new_score, appl_state = self.shoot(action)
-
-            # Save experienced transition
-            obs += [(env_state, action, new_score - score)]
-
-            # Update current score
-            score = new_score
-
-            # Update old env_state with new one
-            env_state = next_env_state
-
-        # In case the level did solve itself by self-destruction or something other unexpected happens
-        if len(obs) == 0 or not (appl_state == GameState.WON or appl_state == GameState.LOST):
-            score = self.ar.get_current_score()
-            ret = score / SCORE_NORMALIZATION
-            return [], [], ret, None, score
-
-        # Prepare observed information
-        obs = np.array(obs)
-        won = appl_state == GameState.WON
-        print("Level %s with score %d." % (("won" if won else "lost"), score))
-        rewards = compute_reward(obs[:, 2], won, grace_factor)
-        ret = np.sum(rewards)
-        score *= won
-
-        return obs, rewards, ret, won, score
-
-    def learn(self, gamma, minibatch, delta, grace_factor, alpha=0.7, beta=0.5):
+    def learn(self, num_instances, gamma, delta, log_file=None, batch_size=1024, epochs=1,
+              alpha=0.7, beta=0.5):
         """Updates the online network's weights. This is the actual learning procedure of the agent.
 
+        :param num_instances: Number of transitions to be learned from
         :param gamma: Discount factor
-        :param minibatch: Number of transitions to be learned from
-        :param delta: trade-off factor between Monte Carlo target return and one-step target return,
+        :param delta: Trade-off factor between Monte Carlo target return and one-step target return,
                       delta = 1 means MC return, delta = 0 means one-step return
-        :param grace_factor:
+        :param batch_size: Number of transitions per batch during learning
+        :param epochs:
         :param alpha: For Prioritized Experience Replay: the larger alpha the stronger prioritization
         :param beta: ?
         :return:
         """
 
-        print("\n\033[94mLearning from experience...\033[0m")
-
         # Obtain a list of useful transitions to learn on
-        trans_ids, probabilities = self.memory.recall(minibatch, alpha)
+        trans_ids, probabilities = self.memory.recall(num_instances, alpha)
 
         # Obtain total number of experienced transitions
         exp_len = self.memory.get_length()
@@ -323,20 +295,16 @@ class ClientDQNAgent(Thread):
 
         # Get list of transitions
         states, actions, rewards, next_states, terminals = \
-            self.memory.get_transitions(trans_ids, grace_factor)
-
-        # Normalize all states and next states
-        states = np.reshape(states / 255, (-1, STATE_PIXEL_RESOLUTION, STATE_PIXEL_RESOLUTION, 3))
-        next_states = np.reshape(next_states / 255, (-1, STATE_PIXEL_RESOLUTION, STATE_PIXEL_RESOLUTION, 3))
+            self.memory.get_transitions(trans_ids)
 
         # Obtain Monte Carlo return for each transition
-        mc_returns = self.memory.get_returns(trans_ids, gamma)
+        mc_returns = self.memory.get_mc_returns(trans_ids, gamma)
 
         # Predict returns (i.e. values V(s)) for all states s
-        pred_returns = np.max(self.online_network.predict(states), axis=1)
+        pred_returns = np.max(self.online_network.predict(states, batch_size=batch_size), axis=1)
 
         # Predict next returns
-        pred_next_returns = np.max(self.target_network.predict(next_states), axis=1)
+        pred_next_returns = np.max(self.target_network.predict(next_states, batch_size=batch_size), axis=1)
 
         # Compute one-step return
         one_step_returns = rewards + gamma * pred_next_returns
@@ -345,7 +313,7 @@ class ClientDQNAgent(Thread):
         target_returns = delta * mc_returns + (1 - delta) * one_step_returns
 
         # Set target return = reward for all terminal transitions
-        target_returns[terminals == True] = rewards[terminals == True]
+        target_returns[terminals] = rewards[terminals]
 
         # Compute Temporal Difference (TD) errors (the "surprise" of the agent)
         td_errs = target_returns - pred_returns
@@ -355,162 +323,135 @@ class ClientDQNAgent(Thread):
 
         # Prepare inputs and targets for fitting
         inputs = states
-        targets = self.target_network.predict(states)
+        targets = self.target_network.predict(states, batch_size=batch_size)
         targets[range(len(trans_ids)), actions] = target_returns
+        sample_weight = np.abs(np.multiply(weights, td_errs))
 
         # Update the online network's weights
-        self.online_network.fit(inputs, targets, epochs=1, verbose=0,
-                                batch_size=minibatch,
-                                sample_weight=np.abs(np.multiply(weights, td_errs)))
+        loss, individual_losses, predictions = self.fit(inputs, targets, epochs=epochs, verbose=False,
+                                                        batch_size=batch_size, sample_weight=sample_weight)
 
-        print("\033[94mDone with learning.\033[0m")
+        self.stats.denote_loss(loss)
+        self.stats.log_extreme_losses(individual_losses, trans_ids, predictions, targets,
+                                      self.memory, self.env, log_file)
 
-    def validate(self, grace_factor=0.25):
+        return loss
+
+    def fit(self, x, y, epochs, batch_size, sample_weight, verbose=False):
+        # Prepare the training dataset
+        x_image, x_numerical = x
+        train_dataset = tf.data.Dataset.from_tensor_slices((x_image, x_numerical, y, sample_weight))
+        train_dataset = train_dataset.shuffle(buffer_size=1024).batch(batch_size)
+        train_loss = 0
+        individual_losses = np.array([])
+        predictions = np.empty((0, 4))
+
+        for epoch in range(epochs):
+            if verbose:
+                print("\rEpoch %d/%d - Batch 0/%d - Loss: --" %
+                      ((epoch + 1), epochs, len(train_dataset)), flush=True, end="")
+
+            # Iterate over the batches of the dataset.
+            for step, (x_image_batch, x_numerical_batch, y_batch, sample_weight_batch) in enumerate(train_dataset):
+                # Train on this batch
+                batch_individual_losses, batch_out = self.train_step(x_image_batch, x_numerical_batch, y_batch,
+                                                                     sample_weight_batch)
+                individual_losses = np.append(individual_losses, batch_individual_losses)
+                predictions = np.append(predictions, batch_out, axis=0)
+
+                train_loss = self.training_loss_metric.result()
+
+                if verbose:
+                    print("\rEpoch %d/%d - Batch %d/%d - Total loss: %.4f" %
+                          ((epoch + 1), epochs, (step + 1), len(train_dataset), float(train_loss)),
+                          flush=True, end="")
+
+            self.training_loss_metric.reset_states()
+            if verbose:
+                print("")
+
+        return train_loss, individual_losses, predictions
+
+    @tf.function
+    def train_step(self, x_image, x_numerical, y, sample_weight):
+        with tf.GradientTape() as tape:
+            out = self.online_network([x_image, x_numerical], training=True)
+            individual_losses = self.training_loss_fn(y, out, sample_weight=sample_weight)
+            cumulated_loss = tf.reduce_mean(individual_losses)
+
+        grads = tape.gradient(cumulated_loss, self.online_network.trainable_weights)
+
+        # Run one step of gradient descent by the optimizer
+        self._optimizer.apply_gradients(zip(grads, self.online_network.trainable_weights))
+
+        self.training_loss_metric.update_state(y, out)
+
+        return individual_losses, out
+
+    def learn_entire_experience(self, batch_size, epochs, gamma, delta, alpha):
+        experience_length = self.memory.get_length()
+        self.learn(experience_length, gamma, delta, batch_size, epochs, alpha)
+
+    def test_performance(self, num_levels=100):
         """Perform validation of the agent on the validation set. On all validation levels,
         the agent plays without epsilon and does not learn from the experience."""
-        print("Start validating...")
-
-        self.ar.set_game_simulation_speed(60)
 
         # Initialize return list (list of normalized final scores for each level played)
         returns = []
         scores = []
-        wins = []
 
-        for level in LIST_OF_VALIDATION_LEVELS:
-            print("\nValidating on level", level)
-
-            # load next validation level
-            self.ar.load_level(level)
-
-            # let the agent play the level
-            _, _, ret, won, score = self.play_level(grace_factor=grace_factor, epsilon=None)
-
-            # check if the level was solved by self-destruction (won is None)
-            if won is not None:
-                returns += [ret]
-                scores += [score]
-                wins += [won]
-            else:
-                print("\033[93mLevel did destruct itself... ¯\\_(ツ)_/¯\033[0m")
-                returns += [ret]
-                scores += [score]
-                wins += [1]
-
-        # plot the results
-        plot_validation(returns,
-                        title="Validation returns",
-                        ylabel="Averaged return",
-                        output_path="plots/validation-returns.png")
-        plot_validation(scores,
-                        title="Validation scores",
-                        ylabel="Averaged score",
-                        output_path="plots/validation-scores.png")
-        plot_validation(wins,
-                        title="Validation win-loss ratio",
-                        ylabel="Averaged win proportion",
-                        output_path="plots/validation-win-loss-ratio.png")
-
-        print("Finished validating.")
+        # Play levels and save observations
+        print("Start performance test...")
+        for i in range(num_levels):
+            self.env.reset()
+            ret, score = self.play_level(epsilon=None)
+            returns += [ret]
+            scores += [score]
+        print("Finished performance test.")
 
         return_avg = np.average(returns)
         score_avg = np.average(scores)
-        win_loss_ratio = np.average(wins)
         print("Return average:", return_avg)
         print("Score average:", score_avg)
-        print("Win-loss ratio:", win_loss_ratio)
 
-        return return_avg, score_avg, win_loss_ratio
+        return return_avg, score_avg
 
-    def plan(self, state, epsilon=None):
-        """Given a state of the game, the deep DQN is used to predict a good shot.
+    def plan(self, states, epsilon=None, batch_size=1024):
+        """Epsilon greedy policy. With a probability of epsilon, a random action is returned. Else,
+        the agent predicts the best shot for the given state.
 
-        :param state: the preprocessed, unnormalized state pixel matrix
+        :param states: List of state matrices
         :param epsilon: If given, epsilon greedy policy will be applied, otherwise the agent plans optimally
-        :return: action, consisting of an index, corresponding to some shot parameters
+        :param batch_size: Batch size when states are fed into NN for prediction
+        :return: action: An index number, corresponding to an action
         """
-
-        # Normalize
-        norm_state = state / 255
-
-        # Obtain list of action-values Q(s,a)
-        q_vals = self.online_network.predict(norm_state)
 
         # Do epsilon-greedy
         if epsilon is not None and np.random.random(1) < epsilon:
             # Choose action by random
-            action = np.random.randint(ANGLE_RESOLUTION * TAP_TIME_RESOLUTION)
+            actions = np.random.randint(self.num_actions, size=self.num_par_envs)
+
+            pred_ret = 0
         else:
-            # Determine optimal action as usual (index of action with highest value)
-            action = q_vals.argmax()
+            # Obtain list of action-values Q(s,a)
+            q_vals = self.online_network.predict(states, batch_size=batch_size)
 
-        # Estimate the expected value for this level
-        val_estimate = np.amax(q_vals)
+            pred_ret = np.max(q_vals, axis=1)[0]
 
-        return action, val_estimate
+            # Determine optimal action
+            actions = q_vals.argmax(axis=1)
 
-    def shoot(self, action):
-        """Performs a shot and observes and returns the consequences."""
+        return actions, pred_ret
 
-        # Get sling reference point coordinates
-        sling_x, sling_y = self.vision.get_sling_reference()
+    def get_states(self):
+        """Fetches the current game grid."""
+        return self.env.get_states()
 
-        # Convert action index into aim vector and tap time
-        dx, dy, tap_time = action_to_params(action)
-
-        # Perform the shot
-        # print("Shooting with dx = %d, dy = %d, tap_time = %d" % (dx, dy, tap_time))
-        self.ar.shoot(sling_x, sling_y, dx, dy, 0, tap_time, isPolar=False)
-
-        # Get the environment state (cropped screenshot)
-        env_state = self.get_state()
-
-        # Obtain game score
-        score = self.ar.get_current_score()
-
-        # Get the application state
-        appl_state = self.ar.get_game_state()
-
-        return env_state, score, appl_state
-
-    def get_state(self):
-        """Fetches the current game screenshot and turns it into a cropped and scaled pixel matrix."""
-
-        # Obtain game screenshot
-        screenshot, ground_truth = self.ar.get_ground_truth_with_screenshot()
-
-        # Update Vision (to get an up-to-date sling reference point)
-        self.vision.update(screenshot, ground_truth)
-
-        # Crop the image to reduce information overload.
-        # The cropped image has then dimension (325, 800, 3).
-        crop = screenshot[75:400, 40:]
-
-        # Rescale the image into a (smaller) square
-        scaled = cv2.resize(crop, (STATE_PIXEL_RESOLUTION, STATE_PIXEL_RESOLUTION))
-
-        # Convert into unsigned byte
-        state = np.expand_dims(scaled.astype(np.uint8), axis=0)
-
-        return state
-
-    def load_next_level(self, next_level=None):
-        """Loads randomly a non-validation level."""
-
-        # While practicing, pick a random training level
-        if next_level is None:
-            next_level = pick_random_level_number()
-            while next_level in LIST_OF_VALIDATION_LEVELS:
-                next_level = pick_random_level_number()
-
-        self.ar.load_level(next_level)
-
-    def learn_from_experience(self, num_epochs, gamma, minibatch, delta, grace_factor, sync_period=128,
+    def learn_from_experience(self, num_epochs, gamma, minibatch, delta, sync_period=128,
                               reset_priorities=True):
         """Tells the agent to learn from the its current experience."""
 
         process = psutil.Process(os.getpid())  # for memory tracking
-        self.ar.set_game_simulation_speed(60)  # for validation
 
         if reset_priorities:
             self.memory.reset_priorities()
@@ -526,7 +467,7 @@ class ClientDQNAgent(Thread):
             if i % 10 == 0:
                 print("Epoch: %d, current RAM usage: %d MB" % (i, (process.memory_info().rss / 1000000)))
 
-            self.learn(gamma, minibatch, delta, grace_factor)
+            self.learn(minibatch, gamma, delta)
 
             if i % 100 == 0:
                 plot_priorities(self.memory.get_priorities())
@@ -535,13 +476,6 @@ class ClientDQNAgent(Thread):
             if i % sync_period == 0:
                 self.target_network = self.online_network
 
-            # Perform Validation of the agent every X levels
-            if i % 250 == 0:
-                return_avg, score_avg, win_loss_ratio = self.validate()
-                return_avgs += [return_avg]
-                score_avgs += [score_avg]
-                win_loss_ratios += [win_loss_ratio]
-
         print("\n---- Learn Summary ----")
         print("Return averages:", return_avgs)
         print("Score averages:", score_avgs)
@@ -549,76 +483,225 @@ class ClientDQNAgent(Thread):
 
         print("Learning from experience done!")
 
-    def just_play(self):
+    def just_play(self, episodes=9999999, epsilon=None, verbose=False):
         print("Just playing around...")
-        self.ar.set_game_simulation_speed(3)
 
-        while True:
-            self.load_next_level()
-            print("\nLevel %d" % self.ar.get_current_level())
-            self.play_level(1, epsilon=None)
+        if self.num_par_envs != 1:
+            self.setup_env(1)
+            self.num_par_envs = 1
 
-    def save_model(self, model_path=None, overwrite=False, checkpoint_no=None, temp=False):
-        """Saves the current model weights to a specified export path."""
-        if model_path is None:
-            model_path = ("temp" if temp else "models") + "/" + self.name
+        for i in range(episodes):
+            self.env.reset()
+            self.play_level(epsilon=epsilon, render_environment=True, verbose=verbose)
+
+    def play_level(self, epsilon, render_environment=True, verbose=False):
+        ret, score, env_time = 0, 0, 0
+        state = self.env.get_states()
+
+        if verbose:
+            print("Predicted return | Performed action")
+            print("-----------------------------------")
+
+        # Play a whole level
+        game_over = False
+        while not game_over:
+            # Predict the next action to take (move, rotate or do nothing)
+            action, pred_ret = self.plan(state, epsilon)
+
+            if verbose:
+                print("{:>16.2f}".format(ret + pred_ret) + " | " + self.env.actions[action[0]])
+
+            # Perform action, observe new environment state, level score and application state
+            state, reward, score, game_over, env_time = self.env.step(action)
+
+            if render_environment:
+                self.env.render()
+
+            ret += reward[0]
+
+        if verbose:
+            print("-----------------------------------")
+            print("Level finished with return %.2f, score %d, and time %d.\n" % (ret, score, env_time))
+
+        return ret, score
+
+    def save(self, out_path=None, overwrite=False, checkpoint=False, checkpoint_no=None):
+        """Saves the current model weights and statistics to a specified export path."""
+        if out_path is None:
+            model_path = self.out_path + ("checkpoints/" if checkpoint else "trained_model")
+        else:
+            model_path = out_path
+
         if checkpoint_no is not None:
-            model_path += "_episode_" + checkpoint_no
-        self.online_network.save_weights(model_path, overwrite=overwrite)
-        print("Saved model.")
+            model_path += "%d" % checkpoint_no
 
-    def restore_model(self, model_path="temp/checkpoint"):
+        self.online_network.save_weights(model_path, overwrite=overwrite)
+
+        self.stats.save(out_path)
+
+        print("Saved model and statistics.")
+
+    def restore(self, model_name, chechpoint=False, episode_no=None):
+        """Restores model weights and statistics."""
+        in_path = "out/%s/%s/" % (self.env.name, model_name)
+        if chechpoint and episode_no is not None:
+            model_path = in_path + "checkpoints/%s" % str(episode_no)
+        else:
+            model_path = in_path + "trained_model"
         print("Restoring model from '%s'." % model_path)
         self.online_network.load_weights(model_path)
-        self.target_network = self.online_network
+        self.init_target_network()
+        self.stats.load(in_path=in_path)
 
     def save_experience(self, experience_path=None, overwrite=False, compress=False):
         if experience_path is None:
-            experience_path = "data/" + self.name
+            experience_path = "data/%d_%s.hdf5" % (self.memory.get_length(), self.name)
         self.memory.export_experience(experience_path, overwrite, compress)
 
-    def restore_experience(self, experience_path=None, grace_factor=None, gamma=None):
+    def restore_experience(self, experience_path=None, gamma=None):
         if experience_path is None:
             experience_path = "data/" + self.name
-        self.memory.import_experience(experience_path, grace_factor, gamma)
+        self.memory.import_experience(experience_path, gamma)
 
     def forget(self):
-        self.memory = ReplayMemory(STATE_PIXEL_RESOLUTION, SCORE_NORMALIZATION)
+        self.memory = ReplayMemory(memory_size=self.exp_buf_size,
+                                   image_state_shape=self.image_state_shape,
+                                   numerical_state_shape=self.numerical_state_shape)
+
+    def print_transitions(self, ids):
+        self.memory.print_trans_from(ids, self.env)
+
+    def write_hyperparams_file(self, num_parallel_steps, replay_period, replay_size, sync_period, epsilon, alpha,
+                               gamma, delta, delta_anneal):
+        hyperparams_file = open(self.out_path + "hyperparams.txt", "w+")
+        metadata = "num_parallel_steps: %d\n" % num_parallel_steps + \
+                   "num_parallel_envs: %d\n" % self.num_par_envs + \
+                   "replay_period: %d\n" % replay_period + \
+                   "replay_size: %d\n" % replay_size + \
+                   "sync_period: %d\n\n" % (sync_period if self.double else -1) + \
+                   "epsilon: %f\n" % epsilon.get_value() + \
+                   "epsilon_anneal: %f\n" % epsilon.get_decay() + \
+                   "epsilon_min: %f\n\n" % epsilon.get_minimum() + \
+                   "alpha: %f\n" % alpha + \
+                   "gamma: %f\n" % gamma + \
+                   "delta: %f\n" % delta + \
+                   "delta_anneal: %f\n\n" % delta_anneal + \
+                   "learning_rate: %f\n" % self._optimizer.get_config()['learning_rate'] + \
+                   "latent_dim: %d\n" % self.latent_dim + \
+                   "latent_a_dim: %d\n" % self.latent_a_dim + \
+                   "latent_v_dim: %d\n\n" % self.latent_v_dim + \
+                   "obs_buf_size: %d\n" % self.obs_buf_size + \
+                   "exp_buf_size: %d\n\n" % self.exp_buf_size
+        hyperparams_file.write(metadata)
+        self.online_network.summary(print_fn=lambda x: hyperparams_file.write(x + '\n'))
+        hyperparams_file.close()
+
+    def setup_out_path(self):
+        out_path = "out/%s/%s/" % (self.env.name, self.name)
+        os.makedirs(out_path, exist_ok=True)
+        return out_path
+
+    def check_for_existing_model(self):
+        if os.path.exists(self.out_path):
+            ans = input("There is already a saved at '%s'. You can either override (delete) the existing model or"
+                        "you can abort the program. Do you want to override the model? (y/n)" % self.out_path)
+            if ans == "y":
+                os.remove(self.out_path)
+            else:
+                raise Exception("User aborted program.")
 
 
-def compute_reward(score, won, grace_factor):
-    """Turns scores into rewards."""
-    reward = score / SCORE_NORMALIZATION
-    if not won:
-        reward *= grace_factor
-    return np.array(reward, dtype='float32')
+class Epsilon:
+    """A simple class providing basic functions to handle decaying epsilon greedy exploration."""
+
+    def __init__(self, value, decay=1, minimum=0):
+        """
+        :param value: Initial value of epsilon
+        :param decay: Decrease/anneal factor for epsilon used when decay() gets invoked
+        :param minimum: The value epsilon becomes in the limit through invoking decay()
+        """
+        if value < minimum:
+            raise ValueError("You must provide a value for epsilon larger than the minimum.")
+
+        self.volatile_val = value - minimum
+        self.rigid_val = minimum
+        self.decay_val = decay
+        self.minimum = minimum
+
+    def get_value(self):
+        return self.volatile_val + self.rigid_val
+
+    def get_decay(self):
+        return self.decay_val
+
+    def get_minimum(self):
+        return self.minimum
+
+    def decay(self):
+        self.volatile_val *= self.decay_val
+
+    def set_value(self, value, minimum=None):
+        if minimum is None:
+            minimum = self.minimum
+        self.volatile_val = value - minimum
+        self.rigid_val = minimum
 
 
-def action_to_params(action):
-    """Converts a given action index into corresponding dx, dy, and tap time."""
+class Observations:
+    """A finite and efficient ring buffer temporally holding observed transitions."""
 
-    # Convert the action index into index pair, indicating angle and tap_time
-    action = np.unravel_index(action, (ANGLE_RESOLUTION, TAP_TIME_RESOLUTION))
+    def __init__(self, buffer_size, num_envs, image_state_shape, numerical_state_shape):
+        self.size = buffer_size
 
-    # Formula parameters
-    c = 3.6
-    d = 1.3
+        self.image_states = np.zeros(np.append([buffer_size, num_envs], image_state_shape), dtype='bool')
+        self.numerical_states = np.zeros(np.append([buffer_size, num_envs], numerical_state_shape), dtype='float32')
+        self.actions = np.zeros((buffer_size, num_envs), dtype='int')
+        self.score_gains = np.zeros((buffer_size, num_envs), dtype='int')
+        self.rewards = np.zeros((buffer_size, num_envs), dtype='float32')
+        self.times = np.zeros((buffer_size, num_envs), dtype='uint')
 
-    # Retrieve shot angle alpha
-    k = action[0] / ANGLE_RESOLUTION
-    alpha = ((1 + 0.5 * c) * k - 3 / 2 * c * k ** 2 + c * k ** 3) ** d * (180 - PHI - PSI) + PHI
+        self.buff_ptr = 0  # the pointer pointing at the current buffer position
+        self.ep_beg_ptrs = np.zeros(num_envs, dtype='int')  # pointing at each episode's first transition
 
-    # Convert angle into vector
-    dx, dy = angle_to_vector(alpha)
+    def save_observations(self, states, actions, score_gains, rewards, times):
+        image_states, numerical_states = states
+        self.image_states[self.buff_ptr] = image_states
+        self.numerical_states[self.buff_ptr] = numerical_states
+        self.actions[self.buff_ptr] = actions
+        self.score_gains[self.buff_ptr] = score_gains
+        self.rewards[self.buff_ptr] = rewards
+        self.times[self.buff_ptr] = times
 
-    # Retrieve tap time
-    t = action[1]
-    tap_time = int(t / TAP_TIME_RESOLUTION * MAXIMUM_TAP_TIME)
+        self.increment()
 
-    print("Shooting with: alpha = %d °, tap time = %d ms" % (alpha, tap_time))
+    def increment(self):
+        self.buff_ptr = (self.buff_ptr + 1) % self.size
+        max_len_episodes = self.ep_beg_ptrs == self.buff_ptr
+        self.ep_beg_ptrs[max_len_episodes] += 1
+        self.ep_beg_ptrs[max_len_episodes] %= self.size
 
-    return dx, dy, tap_time
+    def get_observations(self, idx):
+        ep_beg_ptr = self.ep_beg_ptrs[idx]
 
+        if ep_beg_ptr < self.buff_ptr:
+            obs_image_states = self.image_states[ep_beg_ptr:self.buff_ptr, idx]
+            obs_numerical_states = self.numerical_states[ep_beg_ptr:self.buff_ptr, idx]
+            obs_actions = self.actions[ep_beg_ptr:self.buff_ptr, idx]
+            obs_score_gains = self.score_gains[ep_beg_ptr:self.buff_ptr, idx]
+            obs_rewards = self.rewards[ep_beg_ptr:self.buff_ptr, idx]
+            obs_times = self.times[ep_beg_ptr:self.buff_ptr, idx]
+        else:
+            # Create fancy index for episode entries
+            trans_ids = (list(range(ep_beg_ptr, self.size)) + list(range(self.buff_ptr)), idx)
+            obs_image_states = self.image_states[trans_ids]
+            obs_numerical_states = self.numerical_states[trans_ids]
+            obs_actions = self.actions[trans_ids]
+            obs_score_gains = self.score_gains[trans_ids]
+            obs_rewards = self.rewards[trans_ids]
+            obs_times = self.times[trans_ids]
 
-def pick_random_level_number():
-    return np.random.randint(TOTAL_LEVEL_NUMBER) + 1
+        obs_states = [obs_image_states, obs_numerical_states]
+        return obs_states, obs_actions, obs_score_gains, obs_rewards, obs_times
+
+    def begin_new_episode_for(self, ids):
+        self.ep_beg_ptrs[ids] = self.buff_ptr

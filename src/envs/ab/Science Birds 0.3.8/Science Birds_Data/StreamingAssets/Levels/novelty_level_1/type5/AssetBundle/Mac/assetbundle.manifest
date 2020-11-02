@@ -1,0 +1,81 @@
+ManifestFileVersion: 0
+CRC: 4097141393
+Hashes:
+  AssetFileHash:
+    serializedVersion: 2
+    Hash: bbf8bd07491b91473f0973c4a14b958e
+  TypeTreeHash:
+    serializedVersion: 2
+    Hash: 87203e04aac987dfb8a98258a5db61ec
+HashAppended: 0
+ClassTypes:
+- Class: 1
+  Script: {instanceID: 0}
+- Class: 4
+  Script: {instanceID: 0}
+- Class: 21
+  Script: {instanceID: 0}
+- Class: 28
+  Script: {instanceID: 0}
+- Class: 48
+  Script: {instanceID: 0}
+- Class: 50
+  Script: {instanceID: 0}
+- Class: 60
+  Script: {instanceID: 0}
+- Class: 62
+  Script: {instanceID: 0}
+- Class: 95
+  Script: {instanceID: 0}
+- Class: 114
+  Script: {fileID: 11500000, guid: b2b3df01e7ca54038bd1328817eb5b8d, type: 3}
+- Class: 114
+  Script: {fileID: 11500000, guid: 1496dfd57e5ea402e9851887ca688cd3, type: 3}
+- Class: 115
+  Script: {instanceID: 0}
+- Class: 212
+  Script: {instanceID: 0}
+- Class: 213
+  Script: {instanceID: 0}
+Assets:
+- Assets/Resources/Novelty/ConfiguredPrefabs/novel_material_9.physicsMaterial2D
+- Assets/Resources/Novelty/ConfiguredPrefabs/novel_material_15.physicsMaterial2D
+- Assets/Resources/Novelty/ConfiguredPrefabs/novel_material_8.physicsMaterial2D
+- Assets/Resources/Novelty/ConfiguredPrefabs/novel_material_11.physicsMaterial2D
+- Assets/Resources/Novelty/ConfiguredPrefabs/novel_object_11.prefab
+- Assets/Resources/Novelty/ConfiguredPrefabs/novel_material_12.physicsMaterial2D
+- Assets/Resources/Novelty/ConfiguredPrefabs/novel_object_16.prefab
+- Assets/Resources/Novelty/ConfiguredPrefabs/novel_material_14.physicsMaterial2D
+- Assets/Resources/Novelty/ConfiguredPrefabs/novel_material_19.physicsMaterial2D
+- Assets/Resources/Novelty/ConfiguredPrefabs/novel_material_5.physicsMaterial2D
+- Assets/Resources/Novelty/ConfiguredPrefabs/novel_object_13.prefab
+- Assets/Resources/Novelty/ConfiguredPrefabs/novel_material_10.physicsMaterial2D
+- Assets/Resources/Novelty/ConfiguredPrefabs/novel_object_0.prefab
+- Assets/Resources/Novelty/ConfiguredPrefabs/novel_object_17.prefab
+- Assets/Resources/Novelty/ConfiguredPrefabs/novel_object_6.prefab
+- Assets/Resources/Novelty/ConfiguredPrefabs/novel_object_9.prefab
+- Assets/Resources/Novelty/ConfiguredPrefabs/novel_material_4.physicsMaterial2D
+- Assets/Resources/Novelty/ConfiguredPrefabs/novel_material_18.physicsMaterial2D
+- Assets/Resources/Novelty/ConfiguredPrefabs/novel_object_4.prefab
+- Assets/Resources/Novelty/ConfiguredPrefabs/novel_object_7.prefab
+- Assets/Resources/Novelty/ConfiguredPrefabs/novel_object_18.prefab
+- Assets/Resources/Novelty/ConfiguredPrefabs/novel_object_12.prefab
+- Assets/Resources/Novelty/ConfiguredPrefabs/novel_object_1.prefab
+- Assets/Resources/Novelty/ConfiguredPrefabs/novel_object_8.prefab
+- Assets/Resources/Novelty/ConfiguredPrefabs/novel_object_14.prefab
+- Assets/Resources/Novelty/ConfiguredPrefabs/novel_material_6.physicsMaterial2D
+- Assets/Resources/Novelty/ConfiguredPrefabs/novel_material_16.physicsMaterial2D
+- Assets/Resources/Novelty/ConfiguredPrefabs/novel_material_3.physicsMaterial2D
+- Assets/Resources/Novelty/ConfiguredPrefabs/novel_object_19.prefab
+- Assets/Resources/Novelty/ConfiguredPrefabs/novel_object_15.prefab
+- Assets/Resources/Novelty/ConfiguredPrefabs/novel_object_3.prefab
+- Assets/Resources/Novelty/ConfiguredPrefabs/novel_object_2.prefab
+- Assets/Resources/Novelty/ConfiguredPrefabs/novel_object_5.prefab
+- Assets/Resources/Novelty/ConfiguredPrefabs/novel_material_2.physicsMaterial2D
+- Assets/Resources/Novelty/ConfiguredPrefabs/novel_material_1.physicsMaterial2D
+- Assets/Resources/Novelty/ConfiguredPrefabs/novel_material_17.physicsMaterial2D
+- Assets/Resources/Novelty/ConfiguredPrefabs/novel_material_7.physicsMaterial2D
+- Assets/Resources/Novelty/ConfiguredPrefabs/novel_material_0.physicsMaterial2D
+- Assets/Resources/Novelty/ConfiguredPrefabs/novel_object_10.prefab
+- Assets/Resources/Novelty/ConfiguredPrefabs/novel_material_13.physicsMaterial2D
+Dependencies: []

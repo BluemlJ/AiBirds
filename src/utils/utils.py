@@ -1,7 +1,165 @@
 import numpy as np
+import json
 import matplotlib.pyplot as plt
-import tensorflow as tf
-from tensorflow.keras import backend as K
+
+from src.utils.mem import ReplayMemory
+
+WINDOW_SIZES = (1000, 10000, 100000)
+
+
+class Statistics:
+    def __init__(self):
+        self.final_returns = []
+        self.final_scores = []
+        self.final_times = []
+        self.train_losses = []
+
+    def denote_stats(self, final_return, final_score, final_time):
+        self.final_returns += [final_return]
+        self.final_scores += [final_score]
+        self.final_times += [final_time]
+
+    def denote_loss(self, loss):
+        self.train_losses += [loss]
+
+    def get_length(self):
+        return len(self.final_scores)
+
+    def get_train_cycle(self):
+        return len(self.train_losses)
+
+    def get_final_returns(self):
+        return np.array(self.final_returns)
+
+    def get_final_scores(self):
+        return np.array(self.final_scores)
+
+    def get_final_times(self):
+        return np.array(self.final_times)
+
+    def get_train_losses(self):
+        return np.array(self.train_losses)
+
+    def get_moving_avg(self):
+        if self.get_length() >= 10000:
+            avg_return = np.average(self.final_returns[-10000:])
+            avg_score = np.average(self.final_scores[-10000:])
+            avg_time = np.average(self.final_times[-10000:])
+        else:
+            avg_return = np.nan
+            avg_score = np.nan
+            avg_time = np.nan
+
+        avg_loss = self.get_moving_avg_loss(50)
+
+        return avg_return, avg_score, avg_time, avg_loss
+
+    def get_moving_avg_loss(self, window_size):
+        if self.get_train_cycle() >= window_size:
+            avg_loss = np.average(self.train_losses[-window_size:])
+        else:
+            avg_loss = np.nan
+
+        return avg_loss
+
+    def get_records(self):
+        return_record = np.max(self.final_returns, initial=0)
+        score_record = np.max(self.final_scores, initial=0)
+        time_record = np.max(self.final_times, initial=0)
+
+        return return_record, score_record, time_record
+
+    def get_stats_dict(self):
+        return {"returns": self.final_returns, "scores": self.final_scores,
+                "times": self.final_times, "losses": self.train_losses}
+
+    def set_stats(self, stats_dict):
+        self.final_returns = stats_dict["returns"]
+        self.final_scores = stats_dict["scores"]
+        self.final_times = stats_dict["times"]
+        self.train_losses = stats_dict["losses"]
+
+    def save(self, out_path):
+        file_path = out_path + "stats.txt"
+        stats_dict = self.get_stats_dict()
+        with open(file_path, 'w') as json_file:
+            json.dump(stats_dict, json_file)
+
+    def load(self, in_path):
+        file_path = in_path + "stats.txt"
+        with open(file_path) as json_file:
+            try:
+                stats_dict = json.load(json_file)
+                self.set_stats(stats_dict)
+            except Exception as e:
+                print("Couldn't load statistics. Perhaps the stats.txt file doesn't contain"
+                      "JSON-compatible information.")
+                print(e)
+            else:
+                print("Successfully loaded statistics.")
+
+    def loss_stagnates(self):
+        if len(self.train_losses) >= 1000:
+            return np.abs(np.average(self.train_losses[-1000:-500]) - np.average(self.train_losses[-500:])) < 0.0002
+        else:
+            return False
+
+    def print_stats(self, par_step, total_par_steps, num_envs, comp_time, epsilon, records_file):
+        avg_return, avg_score, avg_time, avg_loss = self.get_moving_avg()
+        return_record, score_record, time_record = self.get_records()
+        done_transitions = int(par_step * num_envs / 1000)
+
+        stats_text = "\n\033[1mParallel step %d/%d\033[0m (%d s last 100)" % \
+                     (par_step, total_par_steps, np.round(comp_time)) + \
+                     "\n   Completed episodes: %d" % self.get_length() + \
+                     "\n   Transitions done:   %d k" % done_transitions + \
+                     "\n   Epsilon:            %.3f" % epsilon.get_value() + \
+                     "\n   Score (10 k MA):    %.1f" % avg_score + \
+                     "\n   Score record:       %.0f" % score_record + \
+                     "\n   Time (10 k MA):     %.1f" % avg_time + \
+                     "\n   Time record:        %d" % time_record + \
+                     "\n   Loss (50 MA):       %.4f" % avg_loss
+        print(stats_text)
+        records_file.write(stats_text + "\n")
+
+    def plot_stats(self, out_path, memory):
+        if self.get_length() >= 200:
+            plot_priorities(memory.get_priorities(),  # useful to determine replay size
+                            output_path=out_path + "priorities.png")
+            if self.get_train_cycle() > 10:
+                plot_moving_average(self.get_train_losses(),
+                                    title="Training loss history",
+                                    window_sizes=(10, 50, 200),
+                                    ylabel="Loss", xlabel="Train cycle",
+                                    output_path=out_path + "loss.png",
+                                    logarithmic=True)
+            plot_moving_average(self.get_final_times(),
+                                title="Episode length history",
+                                ylabel="Time (game ticks)",
+                                output_path=out_path + "times.png")
+            plot_moving_average(self.get_final_scores(),
+                                title="Score history",
+                                ylabel="Score",
+                                output_path=out_path + "scores.png")
+            plot_moving_average(self.get_final_returns(),
+                                title="Return history",
+                                ylabel="Return",
+                                output_path=out_path + "returns.png")
+
+    def log_extreme_losses(self, individual_losses, trans_ids, predictions, targets, memory, env, log_file):
+        moving_avg_loss = self.get_moving_avg_loss(10)
+        if moving_avg_loss > 0:
+            extreme_loss = individual_losses > (moving_avg_loss * 1000)
+            if np.any(extreme_loss) and log_file is not None:
+                print("\033[93mExtreme loss encountered!\033[0m")
+                extreme_loss_ids = np.where(extreme_loss)[0]
+                for i, idx in zip(extreme_loss_ids, trans_ids[extreme_loss_ids]):
+                    log_file.write("\nExtreme loss encountered in train cycle %d!" % self.get_train_cycle() +
+                                   "\nExample loss: %.4f" % individual_losses[i] +
+                                   "\n10 moving avg. loss: %.4f" % moving_avg_loss +
+                                   "\nPredicted Q-values: " + str(predictions[i]) +
+                                   "\nTarget Q-values: " + str(targets[i]))
+                    log_file.write(memory.get_trans_text(idx, env) + "\n")
 
 
 def get_moving_avg(list, n):
@@ -14,37 +172,39 @@ def get_moving_avg(list, n):
     return mov_avg
 
 
-def plot_moving_average(values, title, ylabel, output_path):
-    add_moving_avg_plot(values, 100, 'silver')
-    add_moving_avg_plot(values, 500, 'black')
-    add_moving_avg_plot(values, 2000, '#009d81')
+def plot_moving_average(values, title, ylabel, output_path, window_sizes=WINDOW_SIZES, xlabel="Episode",
+                        logarithmic=False, validation_values=None, validation_period=None):
+    add_moving_avg_plot(values, window_sizes[0], 'silver')
+    add_moving_avg_plot(values, window_sizes[1], 'black')
+    add_moving_avg_plot(values, window_sizes[2], '#009d81')
+
+    if validation_values is not None and validation_period is not None:
+        add_validation_plot(validation_values, validation_period)
 
     plt.title(title)
-    plt.xlabel("Episodes")
+    plt.xlabel(xlabel)
     plt.ylabel(ylabel)
+    if logarithmic:
+        plt.yscale("log")
     plt.legend()
     plt.savefig(output_path, dpi=400)
     plt.show()
 
 
-def plot_win_loss_ratio(list_of_wins):
-    add_moving_avg_plot(list_of_wins, 100, 'silver')
-    add_moving_avg_plot(list_of_wins, 500, 'black')
-    add_moving_avg_plot(list_of_wins, 2000, '#009d81')
-
-    plt.title("Win-loss ratio")
-    plt.xlabel("Episodes")
-    plt.ylabel("Percentage")
-    plt.axis([None, None, 0, 1])
-    plt.legend()
-    plt.savefig("plots/win-loss-ratio.png", dpi=400)
-    plt.show()
+def add_validation_plot(validation_values, validation_period):
+    n = len(validation_values)
+    if n > 0:
+        x = list(range(0, n * validation_period, validation_period))
+        plt.plot(x, validation_values, label="Validation", c="orange")
 
 
-def add_moving_avg_plot(values, window_size, color):
+def add_moving_avg_plot(values, window_size, color=None, label=None):
+    if label is None:
+        label = "Moving average %d" % window_size
+
     if len(values) > window_size:
         mov_avg_ret = get_moving_avg(values, window_size)
-        plt.plot(mov_avg_ret, label="Moving average %d" % window_size, c=color)
+        plt.plot(mov_avg_ret, label=label, c=color)
 
 
 def plot_validation(values, title, ylabel, output_path):
@@ -63,15 +223,6 @@ def plot_validation(values, title, ylabel, output_path):
     plt.show()
 
 
-def plot_state(state):
-    # De-normalize state into image
-    image = np.reshape(state, (124, 124, 3))
-
-    # Plot it
-    plt.imshow(image)
-    plt.show()
-
-
 def angle_to_vector(alpha):
     rad_shot_angle = np.deg2rad(alpha)
 
@@ -81,52 +232,56 @@ def angle_to_vector(alpha):
     return int(dx), int(dy)
 
 
-def plot_priorities(priorities):
-    length = len(priorities)
-    plt.bar(range(length), priorities)
+def plot_priorities(priorities, output_path=None, range=None):
+    histogram = plt.hist(priorities, bins=100, range=range)
     plt.title("Transition priorities in experience set")
-    plt.xlabel("Transition")
-    plt.ylabel("Priority")
-    plt.savefig("plots/priorities.png", dpi=800)
+    plt.xlabel("Priority value")
+    plt.ylabel("Number of transitions")
+    if output_path is not None:
+        plt.savefig(output_path, dpi=800)
     plt.show()
+    return histogram
 
 
-'''def plot_saliency_map(state, model):
-    # NOT FINISHED
-    # De-normalize state into the image
-    state = np.reshape(state, (124, 124, 3))
-    image = (state * 255).astype(np.int)
+def compare_statistics(model_names, env_name):
+    """Takes a list of model names, retrieves their statistics and plots them."""
+    base_path = "out/%s/" % env_name
+    returns = []
+    scores = []
+    times = []
+    losses = []
 
-    # Show the image
-    # plt.imshow(image)
-    # plt.show()
+    for model_name in model_names:
+        in_path = base_path + model_name + "/"
+        stats = Statistics()
+        stats.load(in_path)
 
-    # get the gradients of the last convolutional layer 
-    last_conv = model.get_layer('conv2d_3')
-    # TODO get the gradients
+        returns += [stats.get_final_returns()]
+        scores += [stats.get_final_scores()]
+        times += [stats.get_final_times()]
+        losses += [stats.get_train_losses()]
 
-    # Global average pooling, returning the pooled gradients as well as the activation maps from the last conv layer
-    pooled_grads = K.mean(grads, axis=(0, 1, 2))
-    iterate = K.function([model.input], [pooled_grads, last_conv.output[0]])
-    pooled_grads_value, conv_layer_output = iterate([image])
+    plot_comparison(out_path="out/comparison_plots/returns.png", comparison_values=returns, labels=model_names,
+                    title="Return history comparison", ylabel="Loss", window_size=10000)
+    plot_comparison(out_path="out/comparison_plots/scores.png", comparison_values=scores, labels=model_names,
+                    title="Score history comparison", ylabel="Score", window_size=10000)
+    plot_comparison(out_path="out/comparison_plots/times.png", comparison_values=times, labels=model_names,
+                    title="Episode length history comparison", ylabel="Time (game ticks)", window_size=10000)
+    plot_comparison(out_path="out/comparison_plots/losses.png", comparison_values=losses, labels=model_names,
+                    title="Training loss history comparison", ylabel="Loss", xlabel="Train cycle", logarithmic=True,
+                    window_size=50)
 
-    # Multiplying the gradients and the activation maps to get importance into them 
-    for i in range(512):
-        conv_layer_output[:, :, i] *= pooled_grads_value[i]
-    heatmap = np.mean(conv_layer_output, axis=-1)
 
-    # apply reLU so only positive features are displayed
-    for x in range(heatmap.shape[0]):
-        for y in range(heatmap.shape[1]):
-            heatmap[x, y] = np.max(heatmap[x, y], 0)
+def plot_comparison(out_path, comparison_values, labels, title, ylabel, window_size, xlabel="Episode",
+                    logarithmic=False):
+    for values, label in zip(comparison_values, labels):
+        add_moving_avg_plot(values, window_size, label=label)
 
-    # normalize the heatmap
-    heatmap = np.maximum(heatmap, 0)
-    heatmap /= np.max(heatmap)
-    plt.imshow(heatmap)
-
-    # combine heatmap and input image to get the saliency map and plot it
-    upsample = resize(heatmap, (124, 124), preserve_range=True)
-    plt.imshow(image)
-    plt.imshow(upsample, alpha=0.5)
-    plt.show()'''
+    plt.title(title)
+    plt.xlabel(xlabel)
+    plt.ylabel(ylabel)
+    if logarithmic:
+        plt.yscale("log")
+    plt.legend()
+    plt.savefig(out_path, dpi=400)
+    plt.show()

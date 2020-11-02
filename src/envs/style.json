@@ -1,0 +1,9 @@
+{
+  "minimal": {
+    "falling_color": [200, 200, 200],
+    "grounded_color": [0, 0, 0],
+    "bg_color": [255, 255, 255],
+    "line_color": [100, 100, 100],
+    "font": "freesansbold.ttf"
+  }
+}

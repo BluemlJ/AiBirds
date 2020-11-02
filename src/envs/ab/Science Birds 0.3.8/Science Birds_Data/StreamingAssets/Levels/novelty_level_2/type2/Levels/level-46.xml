@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="utf-16"?>
+<Level width ="2">
+<Camera x="0" y="2" minWidth="20" maxWidth="30">
+<Score highScore ="0">
+<Birds>
+<Bird type="novel_object_0"/>
+<Bird type="novel_object_0"/>
+<Bird type="BirdWhite"/>
+</Birds>
+<Slingshot x="-8" y="-2.5">
+<GameObjects>
+<Block type="RectSmall" material="ice" x="0.95" y="-2.9978" rotation="0" />
+<Block type="RectSmall" material="wood" x="3.0" y="-2.9978" rotation="0" />
+<Block type="RectSmall" material="ice" x="5.05" y="-2.9978" rotation="0" />
+<Block type="RectFat" material="ice" x="0.95" y="-2.4628" rotation="90" />
+<Block type="RectFat" material="wood" x="3.0" y="-2.4628" rotation="90" />
+<Block type="RectFat" material="ice" x="5.05" y="-2.4628" rotation="90" />
+<Block type="SquareSmall" material="ice" x="0.95" y="-1.8228" rotation="0" />
+<Block type="SquareSmall" material="wood" x="3.0" y="-1.8228" rotation="0" />
+<Block type="SquareSmall" material="ice" x="5.05" y="-1.8228" rotation="0" />
+<Block type="RectBig" material="ice" x="1.87" y="-1.4978" rotation="0" />
+<Block type="RectBig" material="wood" x="4.13" y="-1.4978" rotation="0" />
+<Block type="RectFat" material="wood" x="1.975" y="-0.9628" rotation="90" />
+<Block type="RectFat" material="stone" x="2.595" y="-0.9628" rotation="90" />
+<Block type="RectFat" material="stone" x="3.405" y="-0.9628" rotation="90" />
+<Block type="RectFat" material="ice" x="4.025" y="-0.9628" rotation="90" />
+<Block type="RectFat" material="wood" x="1.975" y="-0.1128" rotation="90" />
+<Block type="RectFat" material="ice" x="2.595" y="-0.1128" rotation="90" />
+<Block type="RectFat" material="wood" x="3.405" y="-0.1128" rotation="90" />
+<Block type="RectFat" material="ice" x="4.025" y="-0.1128" rotation="90" />
+<Block type="TriangleHole" material="stone" x="4.025" y="0.7222" rotation="0" />
+<Block type="Triangle" material="stone" x="4.8167" y="-0.9778" rotation="0.0" />
+<Block type="Circle" material="wood" x="1.975" y="0.7122" rotation="0" />
+<Block type="TriangleHole" material="ice" x="1.1833" y="-0.9778" rotation="0" />
+<Pig type="BasicSmall" material="" x="1.63" y="-2.8828" rotation="0" />
+<Pig type="BasicSmall" material="" x="4.37" y="-2.8828" rotation="0" />
+<Pig type="BasicSmall" material="" x="2.32" y="-2.8828" rotation="0" />
+<Pig type="BasicSmall" material="" x="3.68" y="-2.8828" rotation="0" />
+<Platform type="Platform" material="" x="3.0" y="-3.4178" />
+<Platform type="Platform" material="" x="3.0" y="-4.0378" />
+<Platform type="Platform" material="" x="3.0" y="-4.6578" />
+<Platform type="Platform" material="" x="3.62" y="-3.4178" />
+<Platform type="Platform" material="" x="2.38" y="-3.4178" />
+<Platform type="Platform" material="" x="3.62" y="-4.0378" />
+<Platform type="Platform" material="" x="2.38" y="-4.0378" />
+<Platform type="Platform" material="" x="3.62" y="-4.6578" />
+<Platform type="Platform" material="" x="2.38" y="-4.6578" />
+<Platform type="Platform" material="" x="4.24" y="-3.4178" />
+<Platform type="Platform" material="" x="1.76" y="-3.4178" />
+<Platform type="Platform" material="" x="4.24" y="-4.0378" />
+<Platform type="Platform" material="" x="1.76" y="-4.0378" />
+<Platform type="Platform" material="" x="4.24" y="-4.6578" />
+<Platform type="Platform" material="" x="1.76" y="-4.6578" />
+<Platform type="Platform" material="" x="4.86" y="-3.4178" />
+<Platform type="Platform" material="" x="1.14" y="-3.4178" />
+<Platform type="Platform" material="" x="4.86" y="-4.0378" />
+<Platform type="Platform" material="" x="1.14" y="-4.0378" />
+<Platform type="Platform" material="" x="4.86" y="-4.6578" />
+<Platform type="Platform" material="" x="1.14" y="-4.6578" />
+<Platform type="Platform" material="" x="5.165" y="-3.4178" />
+<Platform type="Platform" material="" x="0.835" y="-3.4178" />
+<Platform type="Platform" material="" x="5.165" y="-4.0378" />
+<Platform type="Platform" material="" x="0.835" y="-4.0378" />
+<Platform type="Platform" material="" x="5.165" y="-4.6578" />
+<Platform type="Platform" material="" x="0.835" y="-4.6578" />
+</GameObjects>
+</Level>
