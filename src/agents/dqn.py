@@ -1,7 +1,5 @@
 import keras
-import os
 import time
-import psutil
 
 import tensorflow as tf
 
@@ -25,7 +23,8 @@ class TFDQNAgent:
 
     def __init__(self, env, num_parallel_envs, name, use_dueling=True, use_double=True,
                  latent_dim=64, latent_a_dim=64, latent_v_dim=64,
-                 learning_rate=0.0001, obs_buf_size=100, exp_buf_size=10000, **kwargs):
+                 learning_rate=0.0001, obs_buf_size=100, exp_buf_size=10000,
+                 override=False, **kwargs):
         """
         :param env: The environment in which the agent acts
         :param num_parallel_envs: The number of environments which are executed simultaneously
@@ -51,8 +50,7 @@ class TFDQNAgent:
 
         self.setup_env(num_parallel_envs)
 
-        self.out_path = self.setup_out_path()
-        self.check_for_existing_model()
+        self.out_path = self.setup_out_path(override)
 
         self.stats = Statistics()  # Information collected over the course of training
 
@@ -79,6 +77,9 @@ class TFDQNAgent:
         self.exp_buf_size = exp_buf_size
 
         self.memory = None
+
+        hyperparams_to_json(self.out_path, num_parallel_envs, use_dueling, use_double, learning_rate, latent_dim,
+                            latent_a_dim, latent_v_dim, obs_buf_size, exp_buf_size)
 
         print('DQN agent initialized.')
 
@@ -139,9 +140,10 @@ class TFDQNAgent:
                  replay_period, replay_size,
                  batch_size, replay_epochs,
                  sync_period, gamma,
-                 epsilon, epsilon_anneal, epsilon_min,
+                 epsilon, epsilon_decay_mode, epsilon_decay_rate, epsilon_min,
                  delta, delta_anneal,
-                 alpha):
+                 alpha,
+                 verbose=False):
         """The agent's main training routine.
 
         :param num_parallel_steps: Number of (parallel) transitions to play
@@ -154,7 +156,8 @@ class TFDQNAgent:
                             sync_period == 1 means "Double Q-Learning off"
         :param gamma: Discount factor
         :param epsilon: Probability for random shot (epsilon greedy policy)
-        :param epsilon_anneal: Decrease factor for epsilon
+        :param epsilon_decay_mode: The function used to decrease epsilon after each parallel step ("lin" or "exp")
+        :param epsilon_decay_rate: Decrease factor for epsilon
         :param epsilon_min: Minimum value for epsilon which is not undercut over thr course of practicing
         :param delta: Trade-off factor between Monte Carlo target return and one-step target return,
                       delta = 1 means MC return, delta = 0 means one-step return
@@ -162,46 +165,41 @@ class TFDQNAgent:
         :param alpha: For Prioritized Experience Replay: the larger alpha the stronger prioritization
         """
 
-        epsilon = Epsilon(value=epsilon, decay=epsilon_anneal, minimum=epsilon_min)
+        epsilon = Epsilon(value=epsilon, decay_mode=epsilon_decay_mode,
+                          decay_rate=epsilon_decay_rate, minimum=epsilon_min)
 
         # Save all hyperparameters in txt file
         self.write_hyperparams_file(num_parallel_steps, replay_period, replay_size, sync_period, epsilon, alpha,
                                     gamma, delta, delta_anneal)
 
-        records_file = open(self.out_path + "records.txt", "w+")
-        log_file = open(self.out_path + "log.txt", "a")
+        logger = Logger(self.out_path)
 
         # Initialize the memory where all the experience will be memorized
         self.memory = ReplayMemory(memory_size=self.exp_buf_size,
                                    image_state_shape=self.image_state_shape,
                                    numerical_state_shape=self.numerical_state_shape)
 
-        # Initialize observations buffer with fixed number of transitions per environment
+        # Initialize observations buffer with fixed size
         obs = Observations(self.obs_buf_size, self.num_par_envs, self.image_state_shape, self.numerical_state_shape)
 
         # Reset all environments
         self.env.reset()
-
-        # Initialize auxiliary variables
-        states = self.get_states()
-        scores = np.zeros((self.num_par_envs,), dtype='int')
 
         print("DQN agent starts practicing...")
 
         comp_timer = time.time()
 
         for i in range(1, num_parallel_steps + 1):
+            states = self.get_states()
+
             # Predict the next action to take (move, rotate or do nothing)
             actions, _ = self.plan(states, epsilon.get_value(), batch_size)
 
             # Perform actions, observe new environment state, level score and application state
-            next_states, rewards, next_scores, game_overs, times = self.env.step(actions)
+            rewards, scores, game_overs, times = self.env.step(actions)
 
             # Save observations
-            obs.save_observations(states, actions, next_scores - scores, rewards, times)
-
-            # Update current state and score variables
-            scores = next_scores.copy()
+            obs.save_observations(states, actions, scores, rewards, times)
 
             # Handle finished envs
             fin_env_ids = np.where(game_overs)[0]
@@ -212,33 +210,32 @@ class TFDQNAgent:
                     obs_states, obs_actions, obs_score_gains, obs_rewards, obs_times = obs.get_observations(env_id)
                     self.memory.memorize(obs_states, obs_actions, obs_score_gains, obs_rewards, gamma)
 
-                    obs_return = np.sum(obs_rewards)
-                    obs_score = np.sum(obs_score_gains)
+                    obs_score, obs_return = obs.get_performance(env_id)
+                    new_return_record = self.stats.denote_stats(obs_return, obs_score, obs_times[-1])
 
-                    self.stats.denote_stats(obs_return, obs_score, obs_times[-1])
+                    if new_return_record:
+                        transition = self.memory.get_trans_text(self.memory.get_length() - 1, self.env)
+                        logger.log_new_record(obs_return, transition)
 
                 # Reset all finished envs and update their corresponding current variables
                 self.env.reset_for(fin_env_ids)
-                scores[fin_env_ids] = 0
                 obs.begin_new_episode_for(fin_env_ids)
-
-            states = self.get_states()
 
             # Every X episodes, plot informative graphs
             if i % PLOT_PERIOD == 0:
                 self.stats.plot_stats(self.out_path, self.memory)
 
             # Update the network weights every train_period levels to fit experience
-            if i % replay_period == 0 and self.memory.get_length() > 0:
+            if i % replay_period == 0 and self.memory.get_length() >= replay_size:
                 self.learn(replay_size, gamma=gamma, delta=delta, alpha=alpha,
-                           batch_size=batch_size, epochs=replay_epochs, log_file=log_file)
+                           batch_size=batch_size, epochs=replay_epochs, logger=logger, verbose=verbose)
 
                 # Decrease learning rate if loss changed too little
                 if self.stats.loss_stagnates() and self._optimizer.lr != 0.00001:
                     self._optimizer.lr.assign(0.00001)
-                    log_text = "\nLearning rate decreased in train cycle %d (episode %d)." % \
+                    log_text = "\n*** Learning rate decreased in train cycle %d (episode %d). ***\n" % \
                                (i // replay_period, self.stats.get_length())
-                    log_file.write(log_text)
+                    logger.log(log_text)
 
             # Save model checkpoint
             if i % CHECKPOINT_SAVE_PERIOD == 0:
@@ -254,7 +251,7 @@ class TFDQNAgent:
 
             if i % 100 == 0:
                 self.stats.print_stats(i, num_parallel_steps, self.num_par_envs, time.time() - comp_timer,
-                                       epsilon, records_file)
+                                       epsilon, logger)
                 comp_timer = time.time()
 
             # Cool down
@@ -262,14 +259,12 @@ class TFDQNAgent:
             delta *= delta_anneal  # shifts target return fom MC to one-step
 
         self.save()
-
-        log_file.close()
-        records_file.close()
+        logger.close()
 
         print("Practicing finished successfully!")
 
-    def learn(self, num_instances, gamma, delta, log_file=None, batch_size=1024, epochs=1,
-              alpha=0.7, beta=0.5):
+    def learn(self, num_instances, gamma, delta, logger, batch_size=1024, epochs=1,
+              alpha=0.7, beta=0.5, verbose=False):
         """Updates the online network's weights. This is the actual learning procedure of the agent.
 
         :param num_instances: Number of transitions to be learned from
@@ -328,16 +323,18 @@ class TFDQNAgent:
         sample_weight = np.abs(np.multiply(weights, td_errs))
 
         # Update the online network's weights
-        loss, individual_losses, predictions = self.fit(inputs, targets, epochs=epochs, verbose=False,
+        loss, individual_losses, predictions = self.fit(inputs, targets, epochs=epochs, verbose=verbose,
                                                         batch_size=batch_size, sample_weight=sample_weight)
 
         self.stats.denote_loss(loss)
         self.stats.log_extreme_losses(individual_losses, trans_ids, predictions, targets,
-                                      self.memory, self.env, log_file)
+                                      self.memory, self.env, logger)
 
         return loss
 
     def fit(self, x, y, epochs, batch_size, sample_weight, verbose=False):
+        start = time.time()
+
         # Prepare the training dataset
         x_image, x_numerical = x
         train_dataset = tf.data.Dataset.from_tensor_slices((x_image, x_numerical, y, sample_weight))
@@ -359,7 +356,7 @@ class TFDQNAgent:
                 individual_losses = np.append(individual_losses, batch_individual_losses)
                 predictions = np.append(predictions, batch_out, axis=0)
 
-                train_loss = self.training_loss_metric.result()
+                train_loss = self.training_loss_metric.result().numpy()
 
                 if verbose:
                     print("\rEpoch %d/%d - Batch %d/%d - Total loss: %.4f" %
@@ -369,6 +366,9 @@ class TFDQNAgent:
             self.training_loss_metric.reset_states()
             if verbose:
                 print("")
+
+        if verbose:
+            print("Fitting took %.2f s." % (time.time() - start))
 
         return train_loss, individual_losses, predictions
 
@@ -447,42 +447,6 @@ class TFDQNAgent:
         """Fetches the current game grid."""
         return self.env.get_states()
 
-    def learn_from_experience(self, num_epochs, gamma, minibatch, delta, sync_period=128,
-                              reset_priorities=True):
-        """Tells the agent to learn from the its current experience."""
-
-        process = psutil.Process(os.getpid())  # for memory tracking
-
-        if reset_priorities:
-            self.memory.reset_priorities()
-
-        exp_len = self.memory.get_length()
-        print("Learning from experience (%d transitions) for %d epochs..." % (exp_len, num_epochs))
-
-        return_avgs, score_avgs, win_loss_ratios = [], [], []
-
-        print("Epoch: 0, current RAM usage: %d MB" % (process.memory_info().rss / 1000000))
-
-        for i in range(1, num_epochs + 1):
-            if i % 10 == 0:
-                print("Epoch: %d, current RAM usage: %d MB" % (i, (process.memory_info().rss / 1000000)))
-
-            self.learn(minibatch, gamma, delta)
-
-            if i % 100 == 0:
-                plot_priorities(self.memory.get_priorities())
-
-            # Synchronize target and online network every sync_period levels
-            if i % sync_period == 0:
-                self.target_network = self.online_network
-
-        print("\n---- Learn Summary ----")
-        print("Return averages:", return_avgs)
-        print("Score averages:", score_avgs)
-        print("Win-loss ratios:", win_loss_ratios)
-
-        print("Learning from experience done!")
-
     def just_play(self, episodes=9999999, epsilon=None, verbose=False):
         print("Just playing around...")
 
@@ -496,23 +460,26 @@ class TFDQNAgent:
 
     def play_level(self, epsilon, render_environment=True, verbose=False):
         ret, score, env_time = 0, 0, 0
-        state = self.env.get_states()
 
         if verbose:
-            print("Predicted return | Performed action")
-            print("-----------------------------------")
+            print("Current ret | Predicted ret | Performed action")
+            print("----------------------------------------------")
 
         # Play a whole level
         game_over = False
         while not game_over:
+            state = self.env.get_states()
+
             # Predict the next action to take (move, rotate or do nothing)
             action, pred_ret = self.plan(state, epsilon)
 
             if verbose:
-                print("{:>16.2f}".format(ret + pred_ret) + " | " + self.env.actions[action[0]])
+                print("{:>11.2f}".format(ret) + " | " +
+                      "{:>13.2f}".format(pred_ret) + " | " +
+                      "{:>16s}".format(self.env.actions[action[0]]))
 
             # Perform action, observe new environment state, level score and application state
-            state, reward, score, game_over, env_time = self.env.step(action)
+            reward, score, game_over, env_time = self.env.step(action)
 
             if render_environment:
                 self.env.render()
@@ -537,21 +504,38 @@ class TFDQNAgent:
 
         self.online_network.save_weights(model_path, overwrite=overwrite)
 
-        self.stats.save(out_path)
+        self.stats.save(self.out_path)
 
         print("Saved model and statistics.")
 
-    def restore(self, model_name, chechpoint=False, episode_no=None):
+    def restore(self, model_name, checkpoint_no=None):
         """Restores model weights and statistics."""
         in_path = "out/%s/%s/" % (self.env.name, model_name)
-        if chechpoint and episode_no is not None:
-            model_path = in_path + "checkpoints/%s" % str(episode_no)
+
+        if checkpoint_no is not None:
+            model_path = in_path + "checkpoints/%s" % str(checkpoint_no)
+            self.restore_from(model_path, in_path)
         else:
-            model_path = in_path + "trained_model"
+            self.restore_latest(model_name)
+
+    def restore_latest(self, model_name):
+        """Restores the most recently saved model (can be a checkpoint or a final model)."""
+        in_path = "out/%s/%s/" % (self.env.name, model_name)
+        model_path = in_path + "trained_model"
+        chkpt_dir_path = in_path + "checkpoints/"
+        if os.path.exists(model_path + ".index"):
+            # Restore final model
+            self.restore_from(model_path, in_path)
+        else:
+            # Restore latest checkpoint
+            chkpt_path = tf.train.latest_checkpoint(chkpt_dir_path)
+            self.restore_from(chkpt_path, in_path)
+
+    def restore_from(self, model_path, stats_path):
         print("Restoring model from '%s'." % model_path)
         self.online_network.load_weights(model_path)
         self.init_target_network()
-        self.stats.load(in_path=in_path)
+        self.stats.load(in_path=stats_path)
 
     def save_experience(self, experience_path=None, overwrite=False, compress=False):
         if experience_path is None:
@@ -596,112 +580,24 @@ class TFDQNAgent:
         self.online_network.summary(print_fn=lambda x: hyperparams_file.write(x + '\n'))
         hyperparams_file.close()
 
-    def setup_out_path(self):
+    def setup_out_path(self, override=False):
         out_path = "out/%s/%s/" % (self.env.name, self.name)
+        if not override:
+            check_for_existing_model(out_path)
         os.makedirs(out_path, exist_ok=True)
         return out_path
 
-    def check_for_existing_model(self):
-        if os.path.exists(self.out_path):
-            ans = input("There is already a saved at '%s'. You can either override (delete) the existing model or"
-                        "you can abort the program. Do you want to override the model? (y/n)" % self.out_path)
-            if ans == "y":
-                os.remove(self.out_path)
-            else:
-                raise Exception("User aborted program.")
+
+def load_model(model_name, env):
+    in_path = "out/" + env.name + "/" + model_name + "/"
+    with open(in_path + "hyperparams.json") as infile:
+        hyperparams_dict = json.load(infile)
+
+    agent = TFDQNAgent(env=env, name="tmp", override=True, **hyperparams_dict)
+    agent.restore(model_name)
+    return agent
 
 
-class Epsilon:
-    """A simple class providing basic functions to handle decaying epsilon greedy exploration."""
-
-    def __init__(self, value, decay=1, minimum=0):
-        """
-        :param value: Initial value of epsilon
-        :param decay: Decrease/anneal factor for epsilon used when decay() gets invoked
-        :param minimum: The value epsilon becomes in the limit through invoking decay()
-        """
-        if value < minimum:
-            raise ValueError("You must provide a value for epsilon larger than the minimum.")
-
-        self.volatile_val = value - minimum
-        self.rigid_val = minimum
-        self.decay_val = decay
-        self.minimum = minimum
-
-    def get_value(self):
-        return self.volatile_val + self.rigid_val
-
-    def get_decay(self):
-        return self.decay_val
-
-    def get_minimum(self):
-        return self.minimum
-
-    def decay(self):
-        self.volatile_val *= self.decay_val
-
-    def set_value(self, value, minimum=None):
-        if minimum is None:
-            minimum = self.minimum
-        self.volatile_val = value - minimum
-        self.rigid_val = minimum
-
-
-class Observations:
-    """A finite and efficient ring buffer temporally holding observed transitions."""
-
-    def __init__(self, buffer_size, num_envs, image_state_shape, numerical_state_shape):
-        self.size = buffer_size
-
-        self.image_states = np.zeros(np.append([buffer_size, num_envs], image_state_shape), dtype='bool')
-        self.numerical_states = np.zeros(np.append([buffer_size, num_envs], numerical_state_shape), dtype='float32')
-        self.actions = np.zeros((buffer_size, num_envs), dtype='int')
-        self.score_gains = np.zeros((buffer_size, num_envs), dtype='int')
-        self.rewards = np.zeros((buffer_size, num_envs), dtype='float32')
-        self.times = np.zeros((buffer_size, num_envs), dtype='uint')
-
-        self.buff_ptr = 0  # the pointer pointing at the current buffer position
-        self.ep_beg_ptrs = np.zeros(num_envs, dtype='int')  # pointing at each episode's first transition
-
-    def save_observations(self, states, actions, score_gains, rewards, times):
-        image_states, numerical_states = states
-        self.image_states[self.buff_ptr] = image_states
-        self.numerical_states[self.buff_ptr] = numerical_states
-        self.actions[self.buff_ptr] = actions
-        self.score_gains[self.buff_ptr] = score_gains
-        self.rewards[self.buff_ptr] = rewards
-        self.times[self.buff_ptr] = times
-
-        self.increment()
-
-    def increment(self):
-        self.buff_ptr = (self.buff_ptr + 1) % self.size
-        max_len_episodes = self.ep_beg_ptrs == self.buff_ptr
-        self.ep_beg_ptrs[max_len_episodes] += 1
-        self.ep_beg_ptrs[max_len_episodes] %= self.size
-
-    def get_observations(self, idx):
-        ep_beg_ptr = self.ep_beg_ptrs[idx]
-
-        if ep_beg_ptr < self.buff_ptr:
-            obs_image_states = self.image_states[ep_beg_ptr:self.buff_ptr, idx]
-            obs_numerical_states = self.numerical_states[ep_beg_ptr:self.buff_ptr, idx]
-            obs_actions = self.actions[ep_beg_ptr:self.buff_ptr, idx]
-            obs_score_gains = self.score_gains[ep_beg_ptr:self.buff_ptr, idx]
-            obs_rewards = self.rewards[ep_beg_ptr:self.buff_ptr, idx]
-            obs_times = self.times[ep_beg_ptr:self.buff_ptr, idx]
-        else:
-            # Create fancy index for episode entries
-            trans_ids = (list(range(ep_beg_ptr, self.size)) + list(range(self.buff_ptr)), idx)
-            obs_image_states = self.image_states[trans_ids]
-            obs_numerical_states = self.numerical_states[trans_ids]
-            obs_actions = self.actions[trans_ids]
-            obs_score_gains = self.score_gains[trans_ids]
-            obs_rewards = self.rewards[trans_ids]
-            obs_times = self.times[trans_ids]
-
-        obs_states = [obs_image_states, obs_numerical_states]
-        return obs_states, obs_actions, obs_score_gains, obs_rewards, obs_times
-
-    def begin_new_episode_for(self, ids):
-        self.ep_beg_ptrs[ids] = self.buff_ptr
+def load_and_play(model_name, env):
+    agent = load_model(model_name, env)
+    agent.just_play(verbose=True)

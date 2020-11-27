@@ -1,6 +1,6 @@
 # AiBirds
+**Goal:** Implementation of a fast-learning deep neural network with general applicability and especially well Angry Birds playing performance.
 
-The idea of this project is to write a deep reinforcement learning (DRL) agent to play Angry Birds.
 The idea originated from the [Angry Birds AI Competition](http://aibirds.org/).
 
 <p align="center">
@@ -14,42 +14,30 @@ The idea originated from the [Angry Birds AI Competition](http://aibirds.org/).
 </p>
 
 ## Installation
-* Download and install the [Science Bird Framework](https://gitlab.com/aibirds/sciencebirdsframework)
-	* we recommend to test the framework with the native agent to check installation
-* Install the requirements 
-* Update the src folder with our src folder
-* Update the main.py to start the new dqn agent.
+No dedicated installation required anymore.
+
 
 ## Usage
+Just tune and run the agent from `src/play.py`. You can let the agent practice, observe how the agent plays, plot statistics, and more.
 
-1. Run the game playing interface from science birds
-	- the runnable jar file is in the root folder of the repository called game_playing_interface.jar
-	- use the code below to run:
+Any generated output (models, plots, statistics etc.) will be saved in `out/`.
 
-<code>java -jar  game_playing_interface.jar</code>
-
-2. Run the Science Birds game executable file to start a game instance
-	- The Science Birds game used in this framework is a modified version of Lucas N. Ferreira's work that can be found in his [Github repository](https://github.com/lucasnfe/science-birds)
-
-3. Run the new agent
-
-<code>python3 main.py</code>
-
-### Some helpful improvements
-* generate more levels to train on to stop the agent from remembering all levels
-* increase the speed to maximize the learning process
+### Some helpful tips
+* You can generate new levels using the integrated level generator.
+* Increase the environment speed to accelerate the learning process.
 
 
 ## Key Features
 * Deep Q Network with following improvements
 	* Annealing epsilon-Greedy Policy
 	* Dueling Networks
-	* Prioritized Replay
+	* Prioritized Experience Replay
 	* Double Q-Learning
-	* Multi-step Learning
+	* Optional Multi-step Learning
+* Applicability to environments other than Angry Birds. This repo does also ship with Tetris and Snake.
+
 
 ## Contributing
-
 1. Fork it!
 2. Create your feature branch: `git checkout -b my-new-feature`
 3. Commit your changes: `git commit -am 'Add some feature'`
@@ -58,13 +46,12 @@ The idea originated from the [Angry Birds AI Competition](http://aibirds.org/).
 
 ## Troubleshooting
 
-### System language problems (especially for german contributors)
-The problem looks like the objects didn't spawn but the actual problem is that the objects did spawn out of the level boundaries. The reason for this turned out to be the language configuration of the system. In my case the system language is de_DE and for this, the decimal point is not a point but a comma (e.g. 2,7). The problem is that unity3D uses the system configuration for their coordination system and coordinates like x=2.5, y=8.4 could not be interpreted correctly.
-My solution was to start ScienceBirds with the language en_US.UTF-8 so that unity3D uses points for floats instead of commas.
+### System language problems (especially for German contributors)
+* Symptom: level objects don't show up after level was load. The actual problem is that the objects did spawn outside of the level boundaries. The reason for this turned out to be the OS's language/unit configuration. In my case the system language is de_DE and for this, the decimal point is not a point but a comma (e.g. 2,7). The problem is that unity3D uses the system configuration for their coordination system and coordinates like x=2.5, y=8.4 could not be interpreted correctly.
+* Solution: start ScienceBirds with the language en_US.UTF-8 so that unity3D uses points for floats instead of commas, or (in case of Windows) set the OS's region to English (U.S.).
 
 
 ## Acknowledgements
-
 + The team behind [Science Birds](https://gitlab.com/aibirds/sciencebirdsframework) for a good framework
 
 ## Bibliography

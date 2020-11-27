@@ -1,6 +1,5 @@
 import pygame
 import numpy as np
-import json
 
 from src.envs.env import ParallelEnvironment
 
@@ -23,20 +22,30 @@ for i, block_type in enumerate(BLOCK_TYPES):
 NINTENDO_SCORES = [0, 40, 100, 300, 1200]
 SCORE_NORMALIZATION = 40
 
+FIELD_SZ = 30
+
+STYLE = {"bg_color": (50, 50, 50),
+         "field_color": (70, 70, 70),
+         "border_color": (130, 130, 130),
+         "falling_color": [255, 255, 0],
+         "grounded_color": [50, 200, 255],
+         "font_color": (200, 200, 200),
+         "font": "freesansbold.ttf"}
+
 
 class Tetris(ParallelEnvironment):
     """An efficient Tetris simulator for simultaneous Tetris simulation with optional GUI."""
+    name = "tetris"
 
     def __init__(self, num_par_envs=256, height=20, width=10, style_name="minimal"):
         actions = ['IDLE', 'MOVE_LEFT', 'MOVE_RIGHT', 'ROT_RIGHT']
-        super().__init__("tetris", num_par_envs, actions)
+        super().__init__(num_par_envs, actions)
 
         self.height = height
         self.width = width
 
         self.SPAWN_COORDS = [-2, self.width // 2 - 2]
 
-        self.zoom = 20
         self.speed = 500
 
         self.game_overs = None
@@ -57,10 +66,6 @@ class Tetris(ParallelEnvironment):
 
         if self.num_par_envs < 8:
             self.init_gui()
-
-        self.style_name = style_name
-        with open('src/envs/style.json', 'r') as f:
-            self.style = json.load(f)[self.style_name]
 
     def reset(self):
         self.game_overs = np.asarray(self.num_par_envs * [False])
@@ -116,12 +121,10 @@ class Tetris(ParallelEnvironment):
 
         self.times[~ self.game_overs] += 1
 
-        states = self.get_states()
-
         rewards = (self.scores - old_scores) / SCORE_NORMALIZATION
         # rewards[self.game_overs] = -40 / SCORE_NORMALIZATION
 
-        return states, rewards, self.scores, self.game_overs, self.times
+        return rewards, self.scores, self.game_overs, self.times
 
     def perform_actions(self, actions):
         move_left_ids = np.where(actions == 1)[0]
@@ -188,8 +191,9 @@ class Tetris(ParallelEnvironment):
         num_ids = len(ids)
 
         # pad for convenience
-        padded_fb_fields = np.zeros(shape=(num_ids, self.height + 2*self.FB_PADDING, self.width + 2*self.FB_PADDING),
-                                    dtype='bool')
+        padded_fb_fields = np.zeros(
+            shape=(num_ids, self.height + 2 * self.FB_PADDING, self.width + 2 * self.FB_PADDING),
+            dtype='bool')
 
         anchor_ys = self.fb_anchors[ids, 0] + self.FB_PADDING
         anchor_xs = self.fb_anchors[ids, 1] + self.FB_PADDING
@@ -220,7 +224,7 @@ class Tetris(ParallelEnvironment):
         shapes_old = self.fb_shapes[ids].copy()
 
         # Rotate the shapes
-        self.fb_shapes[ids] = np.rot90(self.fb_shapes[ids], axes=(1,2), k=direction)
+        self.fb_shapes[ids] = np.rot90(self.fb_shapes[ids], axes=(1, 2), k=direction)
 
         collisions, _, _ = self.check_for_collisions(ids)
         collisions_ids = ids[np.where(collisions)[0]]
@@ -264,53 +268,79 @@ class Tetris(ParallelEnvironment):
 
     def init_gui(self):
         pygame.init()
-        pygame.display.set_caption("Tetris2D")
-        self.screen = pygame.display.set_mode((100 + self.width * self.zoom, 150 + self.height * self.zoom))
-        self.clock = pygame.time.Clock()
+        pygame.display.set_caption("Tetris")
+        pygame.font.init()
+        self.screen = pygame.display.set_mode((80 + self.width * FIELD_SZ, 210 + self.height * FIELD_SZ))
+        # self.clock = pygame.time.Clock()
 
     def render(self):
         for event in pygame.event.get():
             if event.type == pygame.MOUSEMOTION:
                 pass
 
-        self.screen.fill(self.style['bg_color'])
+        self.screen.fill(STYLE['bg_color'])
+
+        scr_marg_left = 40
+        scr_marg_top = 120
+
+        # Title text
+        font = pygame.font.SysFont('Consolas', 50)
+        text = font.render("Tetris", True, STYLE["font_color"], None)
+        rect = text.get_rect()
+        rect.bottomleft = (scr_marg_left, scr_marg_top - 30)
+        self.screen.blit(text, rect)
 
         # render environment instances
         for instance_id in range(self.num_par_envs):
 
-            x_margin = (self.screen.get_width() - self.num_par_envs * (self.zoom * self.width) - (
-                    self.num_par_envs - 1) * self.zoom) // 2 + instance_id * (
-                                   self.zoom * self.width + self.zoom)
-            y_margin = self.zoom
+            """env_marg_left = (self.screen.get_width() - self.num_par_envs * (FIELD_SZ * self.width) - (
+                    self.num_par_envs - 1) * FIELD_SZ) // 2 + instance_id * (
+                                    FIELD_SZ * self.width + FIELD_SZ) + scr_marg_left"""
+            env_marg_left = 40
 
-            # render figure
-            fb_coords = np.where(self.fb_fields[instance_id])
-            for y, x in zip(fb_coords[0], fb_coords[1]):
-                pygame.draw.rect(self.screen, self.style['falling_color'],
-                                 [x_margin + x * self.zoom, y_margin + y * self.zoom, self.zoom, self.zoom]),
+            env_marg_top = scr_marg_top
 
-            # render field blocks
-            field_coords = np.where(self.fields[instance_id])
-            for y, x in zip(field_coords[0], field_coords[1]):
-                pygame.draw.rect(self.screen, self.style['grounded_color'],
-                                 [x_margin + x * self.zoom, y_margin + y * self.zoom, self.zoom, self.zoom]),
+            area_width = FIELD_SZ * self.width + 2
+            area_height = FIELD_SZ * self.height + 2
 
-            # render grid lines
+            area_marg_left = env_marg_left
+            area_marg_top = env_marg_top + 50
+
+            # Grid area
+            pygame.draw.rect(self.screen, STYLE['border_color'],
+                             [area_marg_left - 2, area_marg_top - 2, area_width, area_height])
+
+            # Empty fields
             for y in range(self.height):
                 for x in range(self.width):
-                    pygame.draw.rect(self.screen, self.style['line_color'],
-                                     [x_margin + x * self.zoom, y_margin + y * self.zoom, self.zoom, self.zoom], 1)
+                    pygame.draw.rect(self.screen, STYLE['field_color'],
+                                     [area_marg_left + x * FIELD_SZ, area_marg_top + y * FIELD_SZ,
+                                      FIELD_SZ - 2, FIELD_SZ - 2])
 
-            # write score to screen
-            font = pygame.font.Font(self.style['font'], self.zoom)
-            text = font.render(f'score: {self.scores[instance_id]}', True, (0, 0, 0), (255, 255, 255))
+            # Falling block
+            fb_coords = np.where(self.fb_fields[instance_id])
+            for y, x in zip(fb_coords[0], fb_coords[1]):
+                pygame.draw.rect(self.screen, STYLE['falling_color'],
+                                 [area_marg_left + x * FIELD_SZ, area_marg_top + y * FIELD_SZ,
+                                  FIELD_SZ - 2, FIELD_SZ - 2])
+
+            # Lying blocks
+            field_coords = np.where(self.fields[instance_id])
+            for y, x in zip(field_coords[0], field_coords[1]):
+                pygame.draw.rect(self.screen, STYLE['grounded_color'],
+                                 [area_marg_left + x * FIELD_SZ, area_marg_top + y * FIELD_SZ,
+                                  FIELD_SZ - 2, FIELD_SZ - 2])
+
+            # Score text
+            font = pygame.font.SysFont('Consolas', 30)
+            text = font.render(str(self.scores[instance_id]), True, STYLE["font_color"], None)
             rect = text.get_rect()
-            rect.center = (x_margin + self.width // 2 * self.zoom, y_margin - self.zoom // 2 - 1)
+            rect.topright = (env_marg_left + area_width, env_marg_top)
 
             self.screen.blit(text, rect)
 
         pygame.display.flip()
-        self.clock.tick(self.speed)
+        # self.clock.tick(self.speed)
 
     def image_state_to_text(self, state):
         lying_block_grid = state[:, :, 0]

@@ -12,13 +12,15 @@ STYLE = {"bg_color": (50, 50, 50),
          "fruit_color": (240, 170, 30),
          "font_color": (200, 200, 200)}
 
-MAX_TIME_WITHOUT_SCORE = 250  # to avoid infinite loops
+MAX_TIME_WITHOUT_SCORE = 288  # to avoid infinite loops 288
 
 
 class Snake(ParallelEnvironment):
+    name = "snake"
+
     def __init__(self, num_par_envs, height=12, width=24):
         actions = ['MOVE_UPWARDS', 'MOVE_RIGHTWARDS', 'MOVE_DOWNWARDS', 'MOVE_LEFTWARDS']
-        super().__init__("snake", num_par_envs, actions)
+        super().__init__(num_par_envs, actions)
 
         self.height = height
         self.width = width
@@ -123,7 +125,7 @@ class Snake(ParallelEnvironment):
         self.game_overs[starved] = True
         rewards[starved] = -1
 
-        return self.get_states(), rewards, self.snake_bodies.get_lengths(), self.game_overs, self.times
+        return rewards, self.snake_bodies.get_lengths(), self.game_overs, self.times
 
     def change_snake_movement_orientation(self, actions):
         action_valid = (self.snake_movement_orientations - actions) % 2 != 0
@@ -186,12 +188,15 @@ class Snake(ParallelEnvironment):
 
     def get_states(self):
         fields = np.stack((self.snake_head_fields, self.snake_body_fields, self.fruit_fields), axis=3)
-        numeric_state = np.stack((self.snake_movement_orientations, self.time_since_last_score), axis=1)
+        one_hot_orientations = np.zeros((self.num_par_envs, 4), dtype="bool")
+        one_hot_orientations[range(self.num_par_envs), self.snake_movement_orientations] = True
+        numeric_state = np.concatenate((one_hot_orientations, np.expand_dims(self.time_since_last_score, axis=1)),
+                                       axis=1)
         return fields, numeric_state
 
     def get_state_shape(self):
         image_state_shape = [self.height, self.width, 3]
-        numerical_state_shape = 2
+        numerical_state_shape = 5
         return image_state_shape, numerical_state_shape
 
     def __init_gui(self):
@@ -229,9 +234,16 @@ class Snake(ParallelEnvironment):
 
         # Snake
         snake_body_coords = self.snake_bodies.get_body_coords(0)
-        for (y, x) in snake_body_coords:
-            pygame.draw.rect(self.screen, STYLE['snake_color'],
+        length = self.snake_bodies.get_lengths()[0] + 1
+        for i, (y, x) in enumerate(snake_body_coords):
+            color = np.array(STYLE['snake_color']) * (0.35 * i / length + 0.65) * 0.7
+            pygame.draw.rect(self.screen, color,
                              [scr_marg_left + x * FIELD_SZ, scr_marg_top + y * FIELD_SZ, FIELD_SZ - 2, FIELD_SZ - 2])
+
+        # Snake head
+        (head_y, head_x) = self.snake_head_locations[0]
+        pygame.draw.rect(self.screen, STYLE['snake_color'],
+                         [scr_marg_left + head_x * FIELD_SZ, scr_marg_top + head_y * FIELD_SZ, FIELD_SZ - 2, FIELD_SZ - 2])
 
         # Fruit
         fruit_coords = self.fruit_locations[0]
@@ -290,8 +302,11 @@ class Snake(ParallelEnvironment):
         return text
 
     def numerical_state_to_text(self, numerical_state):
-        descriptions = ["up", "right", "down", "left"]
-        return "- head orientation: %s" % descriptions[int(numerical_state[0])]
+        descriptions = np.array(["up", "right", "down", "left"])
+        orientation = descriptions[np.array(numerical_state[0:4], dtype='bool')][0]
+        text = "- head orientation: %s\n" % orientation + \
+            "- time since last fruit: %d" % numerical_state[4]
+        return text
 
 
 class SnakeBodyBuffer:

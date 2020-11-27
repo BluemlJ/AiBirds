@@ -72,13 +72,14 @@ LIST_OF_VALIDATION_LEVELS = []
 
 class AngryBirds(ParallelEnvironment):
     """A wrapper class for the Science Birds environment."""
+    name = "angry_birds"
 
     def __init__(self, num_par_envs):
         if num_par_envs > 1:
             raise ValueError("ERROR: Yet, only one Angry Birds environment is allowed at the same time, but"
                              "you wanted to initialize %d parallel environments." % num_par_envs)
 
-        super().__init__("angry_birds", num_par_envs, ACTIONS)
+        super().__init__(num_par_envs, ACTIONS)
 
         self.id = None
         self.comm_interface = None
@@ -189,13 +190,13 @@ class AngryBirds(ParallelEnvironment):
         self.comm_interface.load_level(level_number)
 
     def step(self, actions):
-        env_state, score, appl_state = self.perform_actions(actions)
+        _, score, appl_state = self.perform_actions(actions)
         score = np.array([score], dtype='uint')
         game_over = (appl_state == GameState.WON or appl_state == GameState.LOST)
         reward = score2reward(score)
         self.time += 1
         self.game_overs[:] = game_over
-        return env_state, reward, score, self.game_overs, self.time
+        return reward, score, self.game_overs, self.time
 
     def perform_actions(self, action):
         """Performs a shot and observes and returns the consequences."""
