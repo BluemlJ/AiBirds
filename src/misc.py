@@ -1,10 +1,13 @@
-from src.utils.utils import compare_statistics
+from src.utils.utils import *
+from src.envs.chain_bomb import ChainBomb
 
-compare_statistics(["replay_size_4_3", "like_par_envs_256", "epsilon_9997", "finnson_3", "finnson_improved_2"],
-                   "snake")
+from src.envs.tetris import Tetris
+from src.envs.snake import Snake
+from src.envs.angry_birds import AngryBirds
+from src.envs.chain_bomb import ChainBomb
 
+compare_statistics(["Alonso", "Hunt"], ChainBomb)
 
-"""compare_statistics(["epsilon_9995", "like_par_envs_256", "epsilon_9997"],
-                   "snake",
-                   ["Epsilon decay = .9995", "Epsilon decay = .9996", "Epsilon decay = .9997"])
-"""
+# cb = ChainBomb(1)
+# highscores_ai, highscores_human = cb.get_highscores()
+# plot_highscores(highscores_ai, highscores_human)

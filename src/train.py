@@ -2,20 +2,21 @@ from src.agents.dqn import *
 from src.envs.tetris import Tetris
 from src.envs.snake import Snake
 from src.envs.angry_birds import AngryBirds
+from src.envs.chain_bomb import ChainBomb
 import time
 
-num_parallel_envs = 500
+num_parallel_envs = 1
 replay_period = 64
 replay_size = int((num_parallel_envs * replay_period) * 4)
 
-obs_buf_size = 4000  # number of transitions that can fit into the observations buffer per env
-exp_buf_size = 4000000  # total number of transitions that can fit into the agent's replay memory
+obs_buf_size = 10  # number of transitions that can fit into the observations buffer per env
+exp_buf_size = 10000  # total number of transitions that can fit into the agent's replay memory
 
 # load_and_play("finnson_improved", Snake)
 
-agent = TFDQNAgent(env=Snake,
+agent = TFDQNAgent(env=ChainBomb,
                    num_parallel_envs=num_parallel_envs,  # look table for fastest value
-                   name="finnson_improved_4",
+                   name="no_lr_decrease_3",
                    use_dueling=True,
                    use_double=True,
                    learning_rate=0.0001,  # not larger than 0.0001 (tested)
@@ -25,7 +26,7 @@ agent = TFDQNAgent(env=Snake,
                    obs_buf_size=obs_buf_size,
                    exp_buf_size=exp_buf_size)
 
-agent.restore("finnson_improved_3")
+agent.restore("no_lr_decrease_2")
 
 agent.practice(num_parallel_steps=1000000,
                replay_period=replay_period,
@@ -33,14 +34,15 @@ agent.practice(num_parallel_steps=1000000,
                batch_size=4096,
                replay_epochs=1,
                sync_period=128,
-               gamma=0.999,
+               gamma=0.99,
                epsilon=0,
                epsilon_decay_mode="exp",
-               epsilon_decay_rate=0.9996,
+               epsilon_decay_rate=0.99995,
                epsilon_min=0,
                delta=0,
                delta_anneal=1,
-               alpha=0.7)
+               alpha=0.7,
+               verbose=False)
 
 """# print("Positive reward:")
 ids = np.where(agent.memory.get_rewards() > 0)[0]

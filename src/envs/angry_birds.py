@@ -2,7 +2,6 @@ import subprocess
 import socket
 import cv2
 import os
-import time
 import psutil
 import atexit
 import numpy as np
@@ -27,6 +26,12 @@ SERVER_CLIENT_CONFIG = {
     "d": 4,
     "e": 5
 }
+
+# Reward
+SCORE_NORMALIZATION = 10000
+
+TOTAL_LEVEL_NUMBER = 1300  # non-novelty levels
+LIST_OF_VALIDATION_LEVELS = []
 
 
 def angle_to_vector(alpha):
@@ -63,21 +68,26 @@ for i in range(ANGLE_RESOLUTION * TAP_TIME_RESOLUTION):
     alpha, tap_time = action_to_params(i)
     ACTIONS += ["alpha = %.1f °, tap_time = %d ms" % (alpha, tap_time)]
 
-# Reward
-SCORE_NORMALIZATION = 10000
 
-TOTAL_LEVEL_NUMBER = 200  # non-novelty levels
-LIST_OF_VALIDATION_LEVELS = []
+def run_science_birds():
+    """Starts the Angry Birds simulation software (if it isn't running already)."""
+    print("Starting Science Birds...")
+    if "Science Birds.exe" not in (p.NAME() for p in psutil.process_iter()):
+        subprocess.Popen(["src/envs/ab/Science Birds 0.3.8/Science Birds.exe"],
+                         cwd="src/envs/ab/Science Birds 0.3.8/")
 
 
 class AngryBirds(ParallelEnvironment):
     """A wrapper class for the Science Birds environment."""
-    name = "angry_birds"
+    NAME = "angry_birds"
+    LEVELS = True
+    TIME_RELEVANT = False
+    WINS_RELEVANT = True
 
     def __init__(self, num_par_envs):
         if num_par_envs > 1:
-            raise ValueError("ERROR: Yet, only one Angry Birds environment is allowed at the same time, but"
-                             "you wanted to initialize %d parallel environments." % num_par_envs)
+            raise ValueError("ERROR: Yet, only one Angry Birds environment is allowed at the same time. "
+                             "You tried to initialize %d parallel environments." % num_par_envs)
 
         super().__init__(num_par_envs, ACTIONS)
 
@@ -92,13 +102,10 @@ class AngryBirds(ParallelEnvironment):
         self.mode = "train"  # level selection mode: training, testing, validation, demo
 
         self.run_framework()
-        self.run_science_birds()
+        run_science_birds()
         self.setup_connections()
 
         self.set_sim_speed(100)
-
-        self.time = np.zeros(shape=self.num_par_envs)
-        self.game_overs = np.zeros(shape=self.num_par_envs)
 
         print("Initialized Angry Birds successfully!")
 
@@ -112,13 +119,6 @@ class AngryBirds(ParallelEnvironment):
     def __del__(self):
         self.framework_process.terminate()
         print("Deleted Angry Birds environment.")
-
-    def run_science_birds(self):
-        """Starts the Angry Birds simulation software (if it isn't running already)."""
-        print("Starting Science Birds...")
-        if "Science Birds.exe" not in (p.name() for p in psutil.process_iter()):
-            subprocess.Popen(["src/envs/ab/Science Birds 0.3.8/Science Birds.exe"],
-                             cwd="src/envs/ab/Science Birds 0.3.8/")
 
     def setup_connections(self):
         self.id = 2888
@@ -144,12 +144,12 @@ class AngryBirds(ParallelEnvironment):
 
     def reset(self):
         self.load_next_level()
-        self.time[:] = 0
+        self.times[:] = 0
         self.game_overs[:] = False
 
     def reset_for(self, ids):
         self.load_next_level()
-        self.time[:] = 0
+        self.times[:] = 0
         self.game_overs[:] = False
 
     def set_mode(self, mode):
@@ -194,9 +194,9 @@ class AngryBirds(ParallelEnvironment):
         score = np.array([score], dtype='uint')
         game_over = (appl_state == GameState.WON or appl_state == GameState.LOST)
         reward = score2reward(score)
-        self.time += 1
+        self.times += 1
         self.game_overs[:] = game_over
-        return reward, score, self.game_overs, self.time
+        return reward, score, self.game_overs, self.times, self.wins
 
     def perform_actions(self, action):
         """Performs a shot and observes and returns the consequences."""

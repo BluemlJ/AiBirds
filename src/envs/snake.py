@@ -16,7 +16,10 @@ MAX_TIME_WITHOUT_SCORE = 288  # to avoid infinite loops 288
 
 
 class Snake(ParallelEnvironment):
-    name = "snake"
+    NAME = "snake"
+    LEVELS = False
+    TIME_RELEVANT = False
+    WINS_RELEVANT = False
 
     def __init__(self, num_par_envs, height=12, width=24):
         actions = ['MOVE_UPWARDS', 'MOVE_RIGHTWARDS', 'MOVE_DOWNWARDS', 'MOVE_LEFTWARDS']
@@ -26,40 +29,39 @@ class Snake(ParallelEnvironment):
         self.width = width
 
         # Locations
-        self.snake_head_locations = None
-        self.snake_bodies = SnakeBodyBuffer(length=self.height * self.width, width=self.num_par_envs)
-        self.fruit_locations = None
-
-        self.snake_movement_orientations = None  # 0: top, 1: right, 2: bottom, 3: left
-
-        # Fields
-        self.snake_head_fields = None
-        self.snake_body_fields = None
-        self.fruit_fields = None
-
-        # State control
-        self.times = None
-        self.game_overs = None
-        self.time_since_last_score = None
-
-        self.screen = None
-
-        self.reset()
-
-    def reset(self):
         self.snake_head_locations = np.zeros(shape=(self.num_par_envs, 2), dtype="int8")
-        self.snake_bodies.reset()
+        self.snake_bodies = SnakeBodyBuffer(length=self.height * self.width, width=self.num_par_envs)
         self.fruit_locations = np.zeros(shape=(self.num_par_envs, 2), dtype="uint8")
 
+        # 0: top, 1: right, 2: bottom, 3: left
         self.snake_movement_orientations = np.zeros(shape=self.num_par_envs, dtype="uint8")
 
+        # Fields
         self.snake_head_fields = np.zeros(shape=(self.num_par_envs, self.height, self.width), dtype="bool")
         self.snake_body_fields = np.zeros(shape=(self.num_par_envs, self.height, self.width), dtype="bool")
         self.fruit_fields = np.zeros(shape=(self.num_par_envs, self.height, self.width), dtype="bool")
 
-        self.times = np.zeros(shape=self.num_par_envs, dtype="uint")
-        self.game_overs = np.zeros(shape=self.num_par_envs, dtype="bool")
+        # State control
         self.time_since_last_score = np.zeros(shape=self.num_par_envs, dtype="uint")
+
+        self.screen = None
+
+        self.__init_env(range(self.num_par_envs))
+
+    def reset(self):
+        self.snake_head_locations[:] = 0
+        self.snake_bodies.reset()
+        self.fruit_locations[:] = 0
+
+        self.snake_movement_orientations[:] = 0
+
+        self.snake_head_fields[:] = False
+        self.snake_body_fields[:] = False
+        self.fruit_fields[:] = False
+
+        self.times[:] = 0
+        self.game_overs[:] = False
+        self.time_since_last_score[:] = 0
 
         self.__init_env(range(self.num_par_envs))
 
@@ -103,15 +105,10 @@ class Snake(ParallelEnvironment):
 
     def step(self, actions):
         rewards = np.zeros(self.num_par_envs)
-        # Init returns to -1 to encourage faster fruit gathering:
-        # rewards[:] = -1
 
         self.change_snake_movement_orientation(actions)
 
-        game_overs, fruit_found = self.snake_creep()
-
-        rewards[fruit_found] = 1
-        rewards[game_overs] = -1
+        fruit_found = self.snake_creep()
 
         self.snake_bodies.grow(fruit_found)
 
@@ -120,12 +117,18 @@ class Snake(ParallelEnvironment):
         self.times[~ self.game_overs] += 1
 
         self.time_since_last_score += 1
+
+        rewards[fruit_found] = 1  # - self.time_since_last_score / MAX_TIME_WITHOUT_SCORE
+        # Encourage faster fruit gathering: doesn't work
+        # rewards[:] -= 0.005  # rotten fruit
+
         self.time_since_last_score[fruit_found] = 0
         starved = self.time_since_last_score >= MAX_TIME_WITHOUT_SCORE
         self.game_overs[starved] = True
-        rewards[starved] = -1
 
-        return rewards, self.snake_bodies.get_lengths(), self.game_overs, self.times
+        rewards[self.game_overs] -= 1
+
+        return rewards, self.snake_bodies.get_lengths(), self.game_overs, self.times, self.wins
 
     def change_snake_movement_orientation(self, actions):
         action_valid = (self.snake_movement_orientations - actions) % 2 != 0
@@ -140,7 +143,7 @@ class Snake(ParallelEnvironment):
 
         self.compute_fields()
 
-        return game_overs, fruit_found
+        return fruit_found
 
     def move_snake_tail(self):
         tail_locations = self.snake_bodies.get_tail_locations()
@@ -314,16 +317,16 @@ class SnakeBodyBuffer:
         self.length = length
         self.width = width
 
-        self.buffer = None
-        self.pointer = None
-        self.body_sizes = None
+        self.buffer = np.zeros(shape=(self.length, self.width, 2), dtype="int8")
+        self.pointer = 0
+        self.body_sizes = np.zeros(shape=self.width, dtype="int32")
 
         self.reset()
 
     def reset(self):
-        self.buffer = np.zeros(shape=(self.length, self.width, 2), dtype="int8")
+        self.buffer[:] = 0
         self.pointer = 0
-        self.body_sizes = np.zeros(shape=self.width, dtype="int32")
+        self.body_sizes[:] = 0
 
     def reset_for(self, ids):
         self.buffer[:, ids] = 0

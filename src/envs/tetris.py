@@ -35,7 +35,12 @@ STYLE = {"bg_color": (50, 50, 50),
 
 class Tetris(ParallelEnvironment):
     """An efficient Tetris simulator for simultaneous Tetris simulation with optional GUI."""
-    name = "tetris"
+    NAME = "tetris"
+    LEVELS = False
+    TIME_RELEVANT = True
+    WINS_RELEVANT = False
+
+
 
     def __init__(self, num_par_envs=256, height=20, width=10, style_name="minimal"):
         actions = ['IDLE', 'MOVE_LEFT', 'MOVE_RIGHT', 'ROT_RIGHT']
@@ -48,15 +53,13 @@ class Tetris(ParallelEnvironment):
 
         self.speed = 500
 
-        self.game_overs = None
-        self.fields = None
-        self.times = None
-        self.scores = None
+        self.fields = np.zeros(shape=(self.num_par_envs, self.height, self.width), dtype='bool')
 
         # Falling block properties
-        self.fb_fields = None
-        self.fb_shapes = None
-        self.fb_anchors = None
+        self.fb_fields = np.zeros(shape=(self.num_par_envs, self.height, self.width), dtype='bool')
+        self.fb_shapes = np.zeros(shape=(self.num_par_envs, 4, 4), dtype='bool')
+        self.fb_anchors = np.zeros(shape=(self.num_par_envs, 2), dtype='int8')
+
         self.FB_PADDING = 3  # prevents index out of bounds exceptions
 
         self.reset()
@@ -68,15 +71,14 @@ class Tetris(ParallelEnvironment):
             self.init_gui()
 
     def reset(self):
-        self.game_overs = np.asarray(self.num_par_envs * [False])
-        self.fields = np.zeros(shape=(self.num_par_envs, self.height, self.width), dtype='bool')
-        self.times = np.zeros(shape=self.num_par_envs)
-        self.scores = np.zeros(shape=self.num_par_envs)
+        self.game_overs[:] = False
+        self.fields[:] = 0
+        self.times[:] = 0
+        self.scores[:] = 0
 
-        # Falling block properties
-        self.fb_fields = np.zeros(shape=(self.num_par_envs, self.height, self.width), dtype='bool')
-        self.fb_shapes = np.zeros(shape=(self.num_par_envs, 4, 4), dtype='bool')
-        self.fb_anchors = np.zeros(shape=(self.num_par_envs, 2), dtype='int8')
+        self.fb_fields[:] = 0
+        self.fb_shapes[:] = 0
+        self.fb_anchors[:] = 0
 
         self.spawn_falling_blocks()
 
@@ -124,7 +126,7 @@ class Tetris(ParallelEnvironment):
         rewards = (self.scores - old_scores) / SCORE_NORMALIZATION
         # rewards[self.game_overs] = -40 / SCORE_NORMALIZATION
 
-        return rewards, self.scores, self.game_overs, self.times
+        return rewards, self.scores, self.game_overs, self.times, self.wins
 
     def perform_actions(self, actions):
         move_left_ids = np.where(actions == 1)[0]

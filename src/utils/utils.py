@@ -5,26 +5,41 @@ import os
 import shutil
 import json
 
+from src.envs.env import Environment
+
 WINDOW_SIZES = (1000, 10000, 50000)
 
 
 class Statistics:
-    def __init__(self):
+    def __init__(self, env: Environment = None):
         self.final_returns = []
         self.final_scores = []
         self.final_times = []
         self.train_losses = []
+        self.wins = []
+
+        # ToDo: save number of transitions
 
         self.return_record = -np.inf
         self.score_record = 0
         self.time_record = 0
 
-    def denote_stats(self, final_return, final_score, final_time):
+        if env is not None:
+            self.time_relevant = env.TIME_RELEVANT
+            self.win_relevant = env.WINS_RELEVANT
+        else:
+            self.time_relevant = False
+            self.win_relevant = False
+
+    def denote_stats(self, final_return, final_score, final_time, win):
         new_return_record = self.return_record < final_return
 
         self.final_returns += [final_return]
         self.final_scores += [final_score]
-        self.final_times += [final_time]
+        if self.time_relevant:
+            self.final_times += [final_time]
+        if self.win_relevant:
+            self.wins += [win]
 
         self.return_record = np.max((self.return_record, final_return))
         self.score_record = np.max((self.score_record, final_score))
@@ -50,30 +65,14 @@ class Statistics:
     def get_final_times(self):
         return np.array(self.final_times)
 
+    def get_wins(self):
+        if not self.win_relevant:
+            return None
+        else:
+            return np.array(self.wins)
+
     def get_train_losses(self):
         return np.array(self.train_losses)
-
-    def get_moving_avg(self):
-        if self.get_length() >= 10000:
-            avg_return = np.average(self.final_returns[-10000:])
-            avg_score = np.average(self.final_scores[-10000:])
-            avg_time = np.average(self.final_times[-10000:])
-        else:
-            avg_return = np.nan
-            avg_score = np.nan
-            avg_time = np.nan
-
-        avg_loss = self.get_moving_avg_loss(50)
-
-        return avg_return, avg_score, avg_time, avg_loss
-
-    def get_moving_avg_loss(self, window_size):
-        if self.get_train_cycle() >= window_size:
-            avg_loss = np.average(self.train_losses[-window_size:])
-        else:
-            avg_loss = np.nan
-
-        return avg_loss
 
     def get_records(self):
         if self.return_record is np.nan:
@@ -83,17 +82,22 @@ class Statistics:
     def compute_records(self):
         self.return_record = np.max(self.final_returns, initial=-np.inf)
         self.score_record = np.max(self.final_scores, initial=0)
-        self.time_record = np.max(self.final_times, initial=0)
+        if self.time_relevant:
+            self.time_record = np.max(self.final_times, initial=0)
 
     def get_stats_dict(self):
         return {"returns": self.final_returns, "scores": self.final_scores,
-                "times": self.final_times, "losses": self.train_losses}
+                "times": self.final_times, "losses": self.train_losses,
+                "wins": self.wins}
 
     def set_stats(self, stats_dict):
         self.final_returns = stats_dict["returns"]
         self.final_scores = stats_dict["scores"]
-        self.final_times = stats_dict["times"]
+        if self.time_relevant:
+            self.final_times = stats_dict["times"]
         self.train_losses = stats_dict["losses"]
+        if self.win_relevant:
+            self.wins = stats_dict["wins"]
 
     def save(self, out_path):
         file_path = out_path + "stats.pckl"
@@ -108,8 +112,7 @@ class Statistics:
                 stats_dict = pickle.load(json_file)
                 self.set_stats(stats_dict)
             except Exception as e:
-                print("Couldn't load statistics. Perhaps the stats.txt file doesn't contain "
-                      "JSON-compatible information.")
+                print("Couldn't load statistics from '%s'!" % in_path)
                 print(e)
             else:
                 print("Successfully loaded statistics from '%s'." % in_path)
@@ -126,28 +129,49 @@ class Statistics:
         else:
             return False
 
-    def print_stats(self, par_step, total_par_steps, num_envs, comp_time, epsilon, logger):
-        avg_return, avg_score, avg_time, avg_loss = self.get_moving_avg()
+    def print_stats(self, par_step, total_par_steps, num_envs, comp_time, total_comp_time, print_stats_period,
+                    epsilon, logger, ma_window_size=1000):
+        # avg_return = get_moving_avg(self.get_final_returns(), ma_window_size)
+        avg_score = get_moving_avg_val(self.get_final_scores(), ma_window_size)
+        avg_loss = get_moving_avg_val(self.get_train_losses(), 50)
+
         return_record, score_record, time_record = self.get_records()
         done_transitions = int(par_step * num_envs / 1000)
 
-        stats_text = "\n\033[1mParallel step %d/%d\033[0m (%d s last 100)" % \
-                     (par_step, total_par_steps, np.round(comp_time)) + \
-                     "\n   Completed episodes: %d" % self.get_length() + \
-                     "\n   Transitions done:   %d k" % done_transitions + \
-                     "\n   Epsilon:            %.3f" % epsilon.get_value() + \
-                     "\n   Score (10 k MA):    %.1f" % avg_score + \
-                     "\n   Score record:       %.0f" % score_record + \
-                     "\n   Time (10 k MA):     %.1f" % avg_time + \
-                     "\n   Time record:        %.0f" % time_record + \
-                     "\n   Loss (50 MA):       %.4f" % avg_loss
+        stats_text = "\n\033[1mParallel step %d/%d\033[0m" % (par_step, total_par_steps) + \
+                     "\n   Completed episodes:        %d" % self.get_length() + \
+                     "\n   Transitions done:          %d k" % done_transitions + \
+                     "\n   Epsilon:                   %.3f" % epsilon.get_value() + \
+                     "\n   " + "{:27s}".format("Score (%d k MA):" % (ma_window_size // 1000)) + ("%.1f" % avg_score) + \
+                     "\n   Score record:              %.0f" % score_record
+
+        if self.win_relevant:
+            avg_wins = get_moving_avg_val(self.get_wins(), ma_window_size)
+            stats_text += \
+                "\n   " + "{:27s}".format("Win-ratio (%d k MA):" % (ma_window_size // 1000)) + ("%.2f" % avg_wins)
+
+        if self.time_relevant:
+            avg_time = get_moving_avg_val(self.get_final_times(), ma_window_size)
+            stats_text += \
+                "\n   " + "{:27s}".format("Time (%d k MA):" % (ma_window_size // 1000)) + ("%.1f" % avg_time) + \
+                "\n   Time record:               %.0f" % time_record
+
+        stats_text += "\n   Loss (50 MA):              %.4f" % avg_loss + \
+                      "\n------" \
+                      "\n   " + "{:27s}".format("Comp time (last %d):" % print_stats_period) + \
+                      "%d s" % np.round(comp_time) + \
+                      "\n   Total comp time:           " + convert_secs_to_hhmmss(total_comp_time)
+
         print(stats_text)
         logger.log_step_statistics(stats_text + "\n")
 
     def plot_stats(self, out_path, memory):
         if self.get_length() >= 200:
+            # Plot priorities bar chart
             plot_priorities(memory.get_priorities(),  # useful to determine replay size
                             output_path=out_path + "priorities.png")
+
+            # Plot train loss line chart
             if self.get_train_cycle() > 10:
                 plot_moving_average(self.get_train_losses(),
                                     title="Training loss history",
@@ -155,21 +179,35 @@ class Statistics:
                                     ylabel="Loss", xlabel="Train cycle",
                                     output_path=out_path + "loss.png",
                                     logarithmic=True)
-            plot_moving_average(self.get_final_times(),
-                                title="Episode length history",
-                                ylabel="Time (game ticks)",
-                                output_path=out_path + "times.png")
+
+            # Plot time line chart
+            if self.time_relevant:
+                plot_moving_average(self.get_final_times(),
+                                    title="Episode length history",
+                                    ylabel="Time (game ticks)",
+                                    output_path=out_path + "times.png")
+
+            # Plot score line chart
             plot_moving_average(self.get_final_scores(),
                                 title="Score history",
                                 ylabel="Score",
                                 output_path=out_path + "scores.png")
+
+            # Plot return line chart
             plot_moving_average(self.get_final_returns(),
                                 title="Return history",
                                 ylabel="Return",
                                 output_path=out_path + "returns.png")
 
+            # Plot win-loss-ratio line chart
+            if self.win_relevant:
+                plot_moving_average(self.get_wins(),
+                                    title="Win-Raio",
+                                    ylabel="Win proportion",
+                                    output_path=out_path + "wins.png")
+
     def log_extreme_losses(self, individual_losses, trans_ids, predictions, targets, memory, env, logger):
-        moving_avg_loss = self.get_moving_avg_loss(10)
+        moving_avg_loss = get_moving_avg_val(self.get_train_losses(), 10)
         if moving_avg_loss > 0:
             extreme_loss = individual_losses > (moving_avg_loss * 1000)
             if np.any(extreme_loss):
@@ -321,17 +359,17 @@ class Logger:
         self.step_stats_file.write(step_statistics)
 
     def log_new_record(self, obs_return, transition):
-        text = "\nNew return record achieved! The new best return is %.2f.\n" % obs_return + \
+        text = "New return record achieved! The new best return is %.2f.\n" % obs_return + \
                "This is how the episode ended:" + transition + "\n"
         self.records_file.write(text)
 
     def log_extreme_loss(self, train_cycle, loss, ma_loss, pred_q, target_q, trans_text):
-        text = "\nExtreme loss encountered in train cycle %d!" % train_cycle + \
+        text = "Extreme loss encountered in train cycle %d!" % train_cycle + \
                "\nExample loss: %.4f" % loss + \
                "\n10 moving avg. loss: %.4f" % ma_loss + \
                "\nPredicted Q-values: " + pred_q + \
                "\nTarget Q-values: " + target_q + \
-               trans_text
+               trans_text + "\n"
         self.extreme_loss_file.write(text)
 
     def log(self, text):
@@ -344,10 +382,19 @@ class Logger:
         self.log_file.close()
 
 
-def get_moving_avg(list, n):
+def get_moving_avg_val(values, window_size):
+    """Computes a single, most recent moving average value given a window size."""
+    if len(values) >= window_size:
+        avg_val = np.average(values[-window_size:])
+    else:
+        avg_val = np.nan
+    return avg_val
+
+
+def get_moving_avg_lst(values, n):
     """Computes the moving average with window size n of a list of numbers. The output list
     is padded at the beginning."""
-    mov_avg = np.cumsum(list, dtype=float)
+    mov_avg = np.cumsum(values, dtype=float)
     mov_avg[n:] = mov_avg[n:] - mov_avg[:-n]
     mov_avg = mov_avg[n - 1:] / n
     mov_avg = np.insert(mov_avg, 0, int(n / 2) * [None])
@@ -385,7 +432,7 @@ def add_moving_avg_plot(values, window_size, color=None, label=None):
         label = "Moving average %d" % window_size
 
     if len(values) > window_size:
-        mov_avg_ret = get_moving_avg(values, window_size)
+        mov_avg_ret = get_moving_avg_lst(values, window_size)
         plt.plot(mov_avg_ret, label=label, c=color)
 
 
@@ -405,6 +452,24 @@ def plot_validation(values, title, ylabel, output_path):
     plt.show()
 
 
+def plot_highscores(highscores_ai, highscores_human, output_path=None):
+    number_levels = len(highscores_ai)
+    normalized_highscores_ai = highscores_ai / highscores_human
+    norm_highscore_diff = normalized_highscores_ai - 1
+
+    bar_colors = ['tab:green' if norm_level_score >= 0 else 'tab:red' for norm_level_score in norm_highscore_diff]
+    plt.bar(range(number_levels), norm_highscore_diff, color=bar_colors, bottom=1)
+    plt.hlines(1, xmin=-0.5, xmax=number_levels - 0.5, colors="black", label="Human performance")
+    plt.title("Highscore Comparison AI vs. Human")
+    plt.xlabel("Level")
+    plt.ylabel("AI's highscore compared to human score")
+    axes = plt.gca()
+    axes.set_ylim([-0.1, 2.1])
+    if output_path is not None:
+        plt.savefig(output_path + "highscores.png", dpi=800)
+    plt.show()
+
+
 def angle_to_vector(alpha):
     rad_shot_angle = np.deg2rad(alpha)
 
@@ -414,10 +479,8 @@ def angle_to_vector(alpha):
     return int(dx), int(dy)
 
 
-def plot_priorities(priorities, output_path=None, range=None):
-    # hist, bins = np.histogram(priorities, bins=100)
-    # logbins = np.logspace(np.log10(bins[0]), np.log10(bins[-1]), len(bins))
-    histogram = plt.hist(priorities, range=range)  # bins=logbins
+def plot_priorities(priorities, output_path=None, bin_range=None):
+    histogram = plt.hist(priorities, range=bin_range, bins=100)
     plt.title("Transition priorities in experience set")
     plt.xlabel("Priority value")
     plt.ylabel("Number of transitions")
@@ -428,9 +491,9 @@ def plot_priorities(priorities, output_path=None, range=None):
     return histogram
 
 
-def compare_statistics(model_names, env_name, labels=None):
+def compare_statistics(model_names, env, labels=None):
     """Takes a list of model names, retrieves their statistics and plots them."""
-    base_path = "out/%s/" % env_name
+    base_path = "out/%s/" % env.NAME
     returns = []
     scores = []
     times = []
@@ -495,7 +558,6 @@ def check_for_existing_model(path):
 
 def hyperparams_to_json(out_path, num_parallel_envs, use_dueling, use_double, learning_rate, latent_dim,
                         latent_a_dim, latent_v_dim, obs_buf_size, exp_buf_size):
-
     hyperparams_dict = {"num_parallel_envs": num_parallel_envs,
                         "use_dueling": use_dueling,
                         "use_double": use_double,
@@ -508,3 +570,9 @@ def hyperparams_to_json(out_path, num_parallel_envs, use_dueling, use_double, le
 
     with open(out_path + "hyperparams.json", 'w') as outfile:
         json.dump(hyperparams_dict, outfile)
+
+
+def convert_secs_to_hhmmss(s):
+    m = s // 60
+    h = m // 60
+    return "%d:%02d:%02d h" % (h, m % 60, s % 60)

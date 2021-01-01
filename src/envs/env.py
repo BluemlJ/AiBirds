@@ -1,6 +1,16 @@
+import numpy as np
+
 class Environment:
     """The basis class for all types of Reinforcement Learning environments."""
-    name = None
+    # Environment name as string used for folder naming
+    NAME = None
+
+    # Specification whether environment supports levels (e.g. Angry Birds does but Snake doesn't)
+    LEVELS = None
+
+    # Specification of relevant statistics (for console output during training and stat plots)
+    TIME_RELEVANT = None
+    WINS_RELEVANT = None
 
 
 class ParallelEnvironment(Environment):
@@ -8,6 +18,12 @@ class ParallelEnvironment(Environment):
     def __init__(self, num_par_envs, actions):
         self.num_par_envs = num_par_envs
         self.actions = actions  # List of action names (strings)
+
+        self.game_overs = np.zeros(shape=num_par_envs, dtype="bool")
+        self.rewards = np.zeros(shape=num_par_envs, dtype="float32")
+        self.scores = np.zeros(shape=num_par_envs, dtype="int32")
+        self.times = np.zeros(shape=num_par_envs, dtype="uint16")
+        self.wins = np.zeros(shape=num_par_envs, dtype="bool")  # for envs with levels
 
     def reset(self):
         """Resets all environments to their initial state."""
@@ -26,6 +42,7 @@ class ParallelEnvironment(Environment):
             scores: the current raw game scores of all environments
             game_overs: a Boolean array indicating game overs
             times: an int array indicating for each env the number of steps since the last reset
+            wins: a Boolean array indicating for each env if the episode was won (if defined)
         """
         pass
 
@@ -54,6 +71,10 @@ class ParallelEnvironment(Environment):
     def numerical_state_to_text(self, numerical_state):
         """Returns a simple textual visualization of a given numerical state."""
         return ""
+
+    def set_mode(self, mode):
+        """Sets the level selection/generation mode."""
+        print("This environment doesn't support different modes!")
 
 
 class MultiAgentEnvironment(Environment):

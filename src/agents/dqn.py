@@ -14,8 +14,11 @@ memory_config = [tf.config.experimental.VirtualDeviceConfiguration(memory_limit=
 tf.config.experimental.set_virtual_device_configuration(gpus[0], memory_config)
 
 # Miscellaneous
-PLOT_PERIOD = 5000  # number of transitions between each learning statistics plot
-CHECKPOINT_SAVE_PERIOD = 5000
+PLOT_PERIOD = 20000  # number of transitions between each learning statistics plot
+PRINT_STATS_PERIOD = 1000
+MA_WINDOW_SIZE = 10000
+CHECKPOINT_SAVE_PERIOD = 20000
+TEST_PERIOD = 20000
 
 
 class TFDQNAgent:
@@ -52,7 +55,7 @@ class TFDQNAgent:
 
         self.out_path = self.setup_out_path(override)
 
-        self.stats = Statistics()  # Information collected over the course of training
+        self.stats = Statistics(env)  # Information collected over the course of training
 
         # Set wanted features
         self.dueling = use_dueling
@@ -163,6 +166,7 @@ class TFDQNAgent:
                       delta = 1 means MC return, delta = 0 means one-step return
         :param delta_anneal: Decrease factor for delta
         :param alpha: For Prioritized Experience Replay: the larger alpha the stronger prioritization
+        :param verbose:
         """
 
         epsilon = Epsilon(value=epsilon, decay_mode=epsilon_decay_mode,
@@ -187,7 +191,8 @@ class TFDQNAgent:
 
         print("DQN agent starts practicing...")
 
-        comp_timer = time.time()
+        total_timer = time.time()
+        comp_timer = total_timer
 
         for i in range(1, num_parallel_steps + 1):
             states = self.get_states()
@@ -196,7 +201,7 @@ class TFDQNAgent:
             actions, _ = self.plan(states, epsilon.get_value(), batch_size)
 
             # Perform actions, observe new environment state, level score and application state
-            rewards, scores, game_overs, times = self.env.step(actions)
+            rewards, scores, game_overs, times, wins = self.env.step(actions)
 
             # Save observations
             obs.save_observations(states, actions, scores, rewards, times)
@@ -211,7 +216,7 @@ class TFDQNAgent:
                     self.memory.memorize(obs_states, obs_actions, obs_score_gains, obs_rewards, gamma)
 
                     obs_score, obs_return = obs.get_performance(env_id)
-                    new_return_record = self.stats.denote_stats(obs_return, obs_score, obs_times[-1])
+                    new_return_record = self.stats.denote_stats(obs_return, obs_score, obs_times[-1], wins[env_id])
 
                     if new_return_record:
                         transition = self.memory.get_trans_text(self.memory.get_length() - 1, self.env)
@@ -225,17 +230,21 @@ class TFDQNAgent:
             if i % PLOT_PERIOD == 0:
                 self.stats.plot_stats(self.out_path, self.memory)
 
+            # If environment has test levels, test on it
+            if i % TEST_PERIOD == 0 and self.env.has_levels():
+                self.test_on_levels()
+
             # Update the network weights every train_period levels to fit experience
             if i % replay_period == 0 and self.memory.get_length() >= replay_size:
                 self.learn(replay_size, gamma=gamma, delta=delta, alpha=alpha,
                            batch_size=batch_size, epochs=replay_epochs, logger=logger, verbose=verbose)
 
                 # Decrease learning rate if loss changed too little
-                if self.stats.loss_stagnates() and self._optimizer.lr != 0.00001:
+                """if self.stats.loss_stagnates() and self._optimizer.lr != 0.00001:
                     self._optimizer.lr.assign(0.00001)
-                    log_text = "\n*** Learning rate decreased in train cycle %d (episode %d). ***\n" % \
+                    log_text = "Learning rate decreased in train cycle %d (episode %d).\n" % \
                                (i // replay_period, self.stats.get_length())
-                    logger.log(log_text)
+                    logger.log(log_text)"""
 
             # Save model checkpoint
             if i % CHECKPOINT_SAVE_PERIOD == 0:
@@ -249,9 +258,10 @@ class TFDQNAgent:
             if self.double and i % sync_period == 0:
                 self.target_network.set_weights(self.online_network.get_weights())
 
-            if i % 100 == 0:
+            if i % PRINT_STATS_PERIOD == 0:
                 self.stats.print_stats(i, num_parallel_steps, self.num_par_envs, time.time() - comp_timer,
-                                       epsilon, logger)
+                                       time.time() - total_timer, PRINT_STATS_PERIOD, epsilon, logger,
+                                       MA_WINDOW_SIZE)
                 comp_timer = time.time()
 
             # Cool down
@@ -271,10 +281,12 @@ class TFDQNAgent:
         :param gamma: Discount factor
         :param delta: Trade-off factor between Monte Carlo target return and one-step target return,
                       delta = 1 means MC return, delta = 0 means one-step return
+        :param logger:
         :param batch_size: Number of transitions per batch during learning
         :param epochs:
         :param alpha: For Prioritized Experience Replay: the larger alpha the stronger prioritization
         :param beta: ?
+        :param verbose:
         :return:
         """
 
@@ -341,7 +353,7 @@ class TFDQNAgent:
         train_dataset = train_dataset.shuffle(buffer_size=1024).batch(batch_size)
         train_loss = 0
         individual_losses = np.array([])
-        predictions = np.empty((0, 4))
+        predictions = np.empty((0, self.env.get_number_of_actions()))
 
         for epoch in range(epochs):
             if verbose:
@@ -456,6 +468,7 @@ class TFDQNAgent:
 
         for i in range(episodes):
             self.env.reset()
+            self.env.render()
             self.play_level(epsilon=epsilon, render_environment=True, verbose=verbose)
 
     def play_level(self, epsilon, render_environment=True, verbose=False):
@@ -479,7 +492,7 @@ class TFDQNAgent:
                       "{:>16s}".format(self.env.actions[action[0]]))
 
             # Perform action, observe new environment state, level score and application state
-            reward, score, game_over, env_time = self.env.step(action)
+            reward, score, game_over, env_time, _ = self.env.step(action)
 
             if render_environment:
                 self.env.render()
@@ -487,10 +500,41 @@ class TFDQNAgent:
             ret += reward[0]
 
         if verbose:
-            print("-----------------------------------")
+            print("----------------------------------------------")
             print("Level finished with return %.2f, score %d, and time %d.\n" % (ret, score, env_time))
 
         return ret, score
+
+    def test_on_levels(self, render=False):
+        test_env = self.env_type(1)
+        test_env.set_mode(test_env.TEST_MODE)
+        num_levels = len(test_env.levels_list)
+        test_scores = np.zeros(num_levels)
+
+        for level in range(num_levels):
+            # Play a whole level
+            test_env.reset(lvl_no=level)
+            if render:
+                test_env.render()
+
+            score = 0
+            game_over = False
+            while not game_over:
+                state = test_env.get_states()
+
+                # Predict the next action to take (move, rotate or do nothing)
+                action, _ = self.plan(state, 0)
+
+                # Perform action, observe new environment state, level score and application state
+                _, score, game_over, _, _ = test_env.step(action)
+
+                if render:
+                    test_env.render()
+
+            test_scores[level] = score
+
+        _, highscores_human = test_env.get_highscores()
+        plot_highscores(test_scores, highscores_human, self.out_path)
 
     def save(self, out_path=None, overwrite=False, checkpoint=False, checkpoint_no=None):
         """Saves the current model weights and statistics to a specified export path."""
@@ -510,7 +554,7 @@ class TFDQNAgent:
 
     def restore(self, model_name, checkpoint_no=None):
         """Restores model weights and statistics."""
-        in_path = "out/%s/%s/" % (self.env.name, model_name)
+        in_path = "out/%s/%s/" % (self.env.NAME, model_name)
 
         if checkpoint_no is not None:
             model_path = in_path + "checkpoints/%s" % str(checkpoint_no)
@@ -520,7 +564,7 @@ class TFDQNAgent:
 
     def restore_latest(self, model_name):
         """Restores the most recently saved model (can be a checkpoint or a final model)."""
-        in_path = "out/%s/%s/" % (self.env.name, model_name)
+        in_path = "out/%s/%s/" % (self.env.NAME, model_name)
         model_path = in_path + "trained_model"
         chkpt_dir_path = in_path + "checkpoints/"
         if os.path.exists(model_path + ".index"):
@@ -581,23 +625,32 @@ class TFDQNAgent:
         hyperparams_file.close()
 
     def setup_out_path(self, override=False):
-        out_path = "out/%s/%s/" % (self.env.name, self.name)
+        out_path = "out/%s/%s/" % (self.env.NAME, self.name)
         if not override:
             check_for_existing_model(out_path)
         os.makedirs(out_path, exist_ok=True)
         return out_path
 
 
-def load_model(model_name, env):
-    in_path = "out/" + env.name + "/" + model_name + "/"
+def load_model(model_name, env, checkpoint_no=None):
+    in_path = "out/" + env.NAME + "/" + model_name + "/"
     with open(in_path + "hyperparams.json") as infile:
         hyperparams_dict = json.load(infile)
 
     agent = TFDQNAgent(env=env, name="tmp", override=True, **hyperparams_dict)
-    agent.restore(model_name)
+    agent.restore(model_name, checkpoint_no)
     return agent
 
 
-def load_and_play(model_name, env):
-    agent = load_model(model_name, env)
+def load_and_play(model_name, env, checkpoint_no=None, mode=None):
+    agent = load_model(model_name, env, checkpoint_no)
+    if mode is not None:
+        agent.env.set_mode(mode)
     agent.just_play(verbose=True)
+
+
+def load_and_test(model_name, env, checkpoint_no=None, mode=None, render=False):
+    agent = load_model(model_name, env, checkpoint_no)
+    if mode is not None:
+        agent.env.set_mode(mode)
+    agent.test_on_levels(render)
