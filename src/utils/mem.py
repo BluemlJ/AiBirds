@@ -264,3 +264,6 @@ class ReplayMemory:
         self.returns[-n:] = 0
 
         self.stack_ptr -= n
+
+    def get_state_shapes(self):
+        return self.image_state_shape, self.numerical_state_shape

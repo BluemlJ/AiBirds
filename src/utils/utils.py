@@ -7,7 +7,8 @@ import json
 
 from src.envs.env import Environment
 
-WINDOW_SIZES = (1000, 10000, 50000)
+WINDOW_SIZES = (5000, 100000, 500000)
+WINDOW_SIZES_LOSS = (10, 50, 200)
 
 
 class Statistics:
@@ -172,10 +173,10 @@ class Statistics:
                             output_path=out_path + "priorities.png")
 
             # Plot train loss line chart
-            if self.get_train_cycle() > 10:
+            if self.get_train_cycle() > WINDOW_SIZES_LOSS[0]:
                 plot_moving_average(self.get_train_losses(),
                                     title="Training loss history",
-                                    window_sizes=(10, 50, 200),
+                                    window_sizes=WINDOW_SIZES_LOSS,
                                     ylabel="Loss", xlabel="Train cycle",
                                     output_path=out_path + "loss.png",
                                     logarithmic=True)
@@ -299,7 +300,7 @@ class Observations:
         self.rewards[self.buff_ptr] = rewards
         self.times[self.buff_ptr] = times
 
-        self.curr_scores = scores
+        self.curr_scores[:] = scores
         self.curr_returns += rewards
 
         self.increment()
@@ -360,7 +361,7 @@ class Logger:
 
     def log_new_record(self, obs_return, transition):
         text = "New return record achieved! The new best return is %.2f.\n" % obs_return + \
-               "This is how the episode ended:" + transition + "\n"
+               "This is how the episode ended:" + transition + "\n\n"
         self.records_file.write(text)
 
     def log_extreme_loss(self, train_cycle, loss, ma_loss, pred_q, target_q, trans_text):
@@ -498,37 +499,48 @@ def compare_statistics(model_names, env, labels=None):
     scores = []
     times = []
     losses = []
+    wins = []
 
+    # Gather multiple statistics
     for model_name in model_names:
         in_path = base_path + model_name + "/"
-        stats = Statistics()
+        stats = Statistics(env)
         stats.load(in_path)
 
         returns += [stats.get_final_returns()]
         scores += [stats.get_final_scores()]
         times += [stats.get_final_times()]
         losses += [stats.get_train_losses()]
+        wins += [stats.get_wins()]
 
-    if not os.path.exists("out/comparison_plots"):
-        os.mkdir("out/comparison_plots")
+    # (Re-)create output folder
+    if os.path.exists("out/comparison_plots"):
+        shutil.rmtree("out/comparison_plots")
+    os.mkdir("out/comparison_plots")
 
     if labels is None:
         labels = model_names
 
+    # Generate all (relevant) comparison plots
     plot_comparison(out_path="out/comparison_plots/returns.png", comparison_values=returns, labels=labels,
-                    title="Return history comparison", ylabel="Return", window_size=10000)
+                    title="Return history comparison", ylabel="Return", window_size=WINDOW_SIZES[-1])
     plot_comparison(out_path="out/comparison_plots/scores.png", comparison_values=scores, labels=labels,
-                    title="Score history comparison", ylabel="Score", window_size=10000)
+                    title="Score history comparison", ylabel="Score", window_size=WINDOW_SIZES[-1])
     plot_comparison(out_path="out/comparison_plots/log_scores.png", comparison_values=scores, labels=labels,
-                    title="Score history comparison", ylabel="Score", window_size=10000, logarithmic=True)
-    plot_comparison(out_path="out/comparison_plots/times.png", comparison_values=times, labels=labels,
-                    title="Episode length history comparison", ylabel="Time (game ticks)", window_size=10000)
-    plot_comparison(out_path="out/comparison_plots/log_times.png", comparison_values=times, labels=labels,
-                    title="Episode length history comparison", ylabel="Time (game ticks)", window_size=10000,
-                    logarithmic=True)
+                    title="Score history comparison", ylabel="Score", window_size=WINDOW_SIZES[-1], logarithmic=True)
+    if env.TIME_RELEVANT:
+        plot_comparison(out_path="out/comparison_plots/times.png", comparison_values=times, labels=labels,
+                        title="Episode length history comparison", ylabel="Time (game ticks)",
+                        window_size=WINDOW_SIZES[-1])
+        plot_comparison(out_path="out/comparison_plots/log_times.png", comparison_values=times, labels=labels,
+                        title="Episode length history comparison", ylabel="Time (game ticks)",
+                        window_size=WINDOW_SIZES[-1], logarithmic=True)
+    if env.WINS_RELEVANT:
+        plot_comparison(out_path="out/comparison_plots/wins.png", comparison_values=wins, labels=labels,
+                        title="Win-Ratio", ylabel="Win proportion", window_size=WINDOW_SIZES[-1])
     plot_comparison(out_path="out/comparison_plots/losses.png", comparison_values=losses, labels=labels,
                     title="Training loss history comparison", ylabel="Loss", xlabel="Train cycle", logarithmic=True,
-                    window_size=50)
+                    window_size=WINDOW_SIZES_LOSS[-1])
 
 
 def plot_comparison(out_path, comparison_values, labels, title, ylabel, window_size, xlabel="Episode",

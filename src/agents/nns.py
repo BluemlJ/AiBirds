@@ -2,25 +2,22 @@ from tensorflow.keras.layers import Input, Flatten, Dense, ReLU, LeakyReLU, Conv
     LayerNormalization, Concatenate, MaxPool2D
 from tensorflow.keras.initializers import VarianceScaling, GlorotNormal
 
-from src.envs.angry_birds import AngryBirds
-from src.envs.tetris import Tetris
-from src.envs.snake import Snake
-from src.envs.chain_bomb import ChainBomb
+from src.envs import *
 
 
-def get_input_model(env, latent_dim):
+def get_input_model(env, latent_dim, latent_depth):
     if isinstance(env, AngryBirds):
-        image_state_shape, numerical_state_shape = env.get_state_shape()
+        image_state_shape, numerical_state_shape = env.get_state_shapes()
         return get_angry_birds_model(image_state_shape, latent_dim)
     elif isinstance(env, Tetris):
-        image_state_shape, numerical_state_shape = env.get_state_shape()
+        image_state_shape, numerical_state_shape = env.get_state_shapes()
         return get_tetris_model(image_state_shape, latent_dim)
     elif isinstance(env, Snake):
-        image_state_shape, numerical_state_shape = env.get_state_shape()
+        image_state_shape, numerical_state_shape = env.get_state_shapes()
         return get_snake_model(image_state_shape, numerical_state_shape, latent_dim)
     elif isinstance(env, ChainBomb):
-        image_state_shape, numerical_state_shape = env.get_state_shape()
-        return get_cb_model(image_state_shape, numerical_state_shape, latent_dim)
+        image_state_shape, numerical_state_shape = env.get_state_shapes()
+        return get_cb_model(image_state_shape, numerical_state_shape, latent_dim, latent_depth)
     else:
         raise ValueError("ERROR: Invalid environment given.")
 
@@ -94,20 +91,22 @@ def get_snake_model(image_state_shape, numerical_state_shape, latent_dim):
     return [image_input, numeric_input], latent
 
 
-def get_cb_model(image_state_shape, numerical_state_shape, latent_dim):
+def get_cb_model(image_state_shape, numerical_state_shape, latent_dim, latent_depth):
     image_input = Input(shape=image_state_shape, name="image_input")  # like 2d image plus channels
     numeric_input = Input(shape=numerical_state_shape, name="numeric_input")  # like 1d vector
 
-    conv1 = Convolution2D(32, (4, 4), strides=1, padding='same', kernel_initializer=GlorotNormal,
-                          use_bias=False, activation="relu")(image_input)
-    pool1 = MaxPool2D((2, 2))(conv1)
+    enc = Convolution2D(32, (4, 4), strides=1, padding='same', kernel_initializer=GlorotNormal,
+                        use_bias=False, activation="relu", name="enc1")(image_input)
+    enc = Convolution2D(64, (2, 2), strides=2, padding='same', kernel_initializer=GlorotNormal,
+                        use_bias=False, activation="relu", name="enc2")(enc)
+    enc = Convolution2D(128, (2, 2), strides=1, padding='same', kernel_initializer=GlorotNormal,
+                        use_bias=False, activation="relu", name="enc3")(enc)
+    enc = Convolution2D(256, (2, 2), strides=2, padding='valid', kernel_initializer=GlorotNormal,
+                        use_bias=False, activation="relu", name="enc4")(enc)
 
-    conv2 = Convolution2D(128, (2, 2), strides=1, padding='same', kernel_initializer=GlorotNormal,
-                          use_bias=False, activation="relu")(pool1)
-    pool2 = MaxPool2D((2, 2))(conv2)
-
-    latent_conv = Flatten(name='latent')(pool2)
-    concat = Concatenate()([latent_conv, numeric_input])
-    latent = Dense(latent_dim, activation="relu")(concat)
+    latent_conv = Flatten(name='latent')(enc)
+    latent = Concatenate()([latent_conv, numeric_input])
+    for i in range(latent_depth):
+        latent = Dense(latent_dim, activation="relu")(latent)
 
     return [image_input, numeric_input], latent

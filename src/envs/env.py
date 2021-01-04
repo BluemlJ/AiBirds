@@ -1,5 +1,6 @@
 import numpy as np
 
+
 class Environment:
     """The basis class for all types of Reinforcement Learning environments."""
     # Environment name as string used for folder naming
@@ -50,7 +51,7 @@ class ParallelEnvironment(Environment):
         """Returns a state representation for all environments in a single NumPy array."""
         pass
 
-    def get_state_shape(self):
+    def get_state_shapes(self):
         """Returns two arguments:
         image_state_shape: dimensions of the image state matrix in channel-last order
         numerical_state_shape: length of the numerical state vector"""
@@ -75,6 +76,10 @@ class ParallelEnvironment(Environment):
     def set_mode(self, mode):
         """Sets the level selection/generation mode."""
         print("This environment doesn't support different modes!")
+
+    def generate_pretrain_data(self, num_instances):
+        """Generates a set of num_instances images which can be used for autoencoder pretraining."""
+        pass
 
 
 class MultiAgentEnvironment(Environment):

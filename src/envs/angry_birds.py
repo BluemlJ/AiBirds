@@ -239,7 +239,7 @@ class AngryBirds(ParallelEnvironment):
 
         return state, []
 
-    def get_state_shape(self):
+    def get_state_shapes(self):
         image_state_shape = [STATE_PIXEL_RES, STATE_PIXEL_RES, 3]
         numerical_state_shape = 0
         return image_state_shape, numerical_state_shape

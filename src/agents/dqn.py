@@ -14,20 +14,20 @@ memory_config = [tf.config.experimental.VirtualDeviceConfiguration(memory_limit=
 tf.config.experimental.set_virtual_device_configuration(gpus[0], memory_config)
 
 # Miscellaneous
-PLOT_PERIOD = 20000  # number of transitions between each learning statistics plot
-PRINT_STATS_PERIOD = 1000
+PLOT_PERIOD = 2000  # number of transitions between each learning statistics plot
+PRINT_STATS_PERIOD = 100
 MA_WINDOW_SIZE = 10000
-CHECKPOINT_SAVE_PERIOD = 20000
-TEST_PERIOD = 20000
+CHECKPOINT_SAVE_PERIOD = 5000
+TEST_PERIOD = 2000
 
 
 class TFDQNAgent:
     """Deep Q-Network (DQN) agent for playing Tetris, Snake or other games"""
 
     def __init__(self, env, num_parallel_envs, name, use_dueling=True, use_double=True,
-                 latent_dim=64, latent_a_dim=64, latent_v_dim=64,
+                 latent_dim=64, latent_a_dim=64, latent_v_dim=64, latent_depth=1,
                  learning_rate=0.0001, obs_buf_size=100, exp_buf_size=10000,
-                 override=False, **kwargs):
+                 use_pretrained=False, override=False, **kwargs):
         """
         :param env: The environment in which the agent acts
         :param num_parallel_envs: The number of environments which are executed simultaneously
@@ -65,14 +65,17 @@ class TFDQNAgent:
         self.latent_dim = latent_dim
         self.latent_a_dim = latent_a_dim
         self.latent_v_dim = latent_v_dim
+        self.latent_depth = latent_depth
         self._optimizer = tf.optimizers.Adam(learning_rate=learning_rate)
         self.training_loss_fn = keras.losses.MeanSquaredError(reduction=tf.keras.losses.Reduction.NONE)
         self.training_loss_metric = keras.metrics.MeanSquaredError()
 
         # Initialize the architecture of the acting and learning part of the DQN (theta)
-        self.inputs, latent = get_input_model(self.env, self.latent_dim)
+        self.inputs, latent = get_input_model(self.env, self.latent_dim, self.latent_depth)
         self.outputs = None
         self.online_network = self._build_compile_model(latent)
+        if use_pretrained:
+            self.load_pretrained_model()
         self.target_network = None
         self.init_target_network()
 
@@ -132,11 +135,19 @@ class TFDQNAgent:
         else:
             self.target_network = self.online_network
 
+    def load_pretrained_model(self):
+        pretrained_path = "out/" + self.env_type.NAME + "/pretrained"
+        if not os.path.exists(pretrained_path):
+            Exception("You specified to load a pretrained model. However, there is no pretrained model "
+                      "at '%s'." % pretrained_path)
+
+        self.online_network.load_weights(pretrained_path + "/pretrained", by_name=True)
+
     def setup_env(self, num_envs):
         if self.env is not None:
             del self.env
         self.env = self.env_type(**self.env_args, num_par_envs=num_envs)
-        self.image_state_shape, self.numerical_state_shape = self.env.get_state_shape()
+        self.image_state_shape, self.numerical_state_shape = self.env.get_state_shapes()
         self.num_actions = self.env.get_number_of_actions()
 
     def practice(self, num_parallel_steps,
@@ -516,6 +527,7 @@ class TFDQNAgent:
             test_env.reset(lvl_no=level)
             if render:
                 test_env.render()
+                time.sleep(0.35)
 
             score = 0
             game_over = False

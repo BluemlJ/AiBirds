@@ -197,7 +197,7 @@ class Snake(ParallelEnvironment):
                                        axis=1)
         return fields, numeric_state
 
-    def get_state_shape(self):
+    def get_state_shapes(self):
         image_state_shape = [self.height, self.width, 3]
         numerical_state_shape = 5
         return image_state_shape, numerical_state_shape
