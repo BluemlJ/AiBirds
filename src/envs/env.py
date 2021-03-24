@@ -6,7 +6,7 @@ class Environment:
     # Environment name as string used for folder naming
     NAME = None
 
-    # Specification whether environment supports levels (e.g. Angry Birds does but Snake doesn't)
+    # True if environment supports levels (e.g. Angry Birds does but Snake doesn't)
     LEVELS = None
 
     # Specification of relevant statistics (for console output during training and stat plots)
@@ -80,6 +80,10 @@ class ParallelEnvironment(Environment):
     def generate_pretrain_data(self, num_instances):
         """Generates a set of num_instances images which can be used for autoencoder pretraining."""
         pass
+
+    def has_test_levels(self):
+        """Returns True if the env has dedicated test levels."""
+        return False
 
 
 class MultiAgentEnvironment(Environment):

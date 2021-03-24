@@ -271,22 +271,40 @@ class ChainBomb(ParallelEnvironment, ChainBombBase):
         next_lvl_no = (self.current_level - 1) % len(self.levels_list)
         self.reset(next_lvl_no)
 
-    def set_mode(self, mode):
-        """Sets the level selection/generation mode."""
-        if mode == self.TRAIN_MODE:
-            self.current_level = None
-            self.mode = mode
-            self.reset()
-        elif mode == self.TEST_MODE:
-            if self.num_par_envs == 1:
-                self.current_level = 0
-                self.mode = mode
-                self.reset()
-            else:
-                print("Warning: Test mode only allowed if environment simulates a single instance. "
-                      "This environment, however, has %d parallel instances." % self.num_par_envs)
-        else:
-            raise Exception("Invalid mode number given.")
+    def step(self, actions):
+        points = self.ignite_explosion(actions)
+
+        # Use up bomb
+        self.inventories[range(self.num_par_envs), self.times] = 0
+        self.num_bombs_inv -= 1
+
+        self.times += 1
+
+        # End game if all bombs are used up
+        self.game_overs[:] = self.num_bombs_inv == 0
+
+        # Declare win if all targets are eliminated
+        all_targets_eliminated = self.obj_nums[:, 0] == 0
+        self.game_overs[all_targets_eliminated] = True
+        self.wins[all_targets_eliminated] = True
+
+        # Sum up points of all bombs left in inventory
+        points[self.wins] += self.num_bombs_inv[self.wins].astype("int32") * POINT_TABLE[8]
+
+        assert np.all(points % 10 == 0)
+
+        self.scores += points
+        reward = points / 100
+
+        # Nullify score for lost levels
+        lost = self.game_overs & ~ self.wins
+        self.scores[lost] = 0
+        reward[lost] = -3
+
+        if self.mode == self.TEST_MODE and self.game_overs[0] and self.wins[0]:
+            self.update_highscore()
+
+        return reward, self.scores, self.game_overs, self.times, self.wins
 
     def generate_random_levels(self, ids):
         n = len(ids)
@@ -324,41 +342,6 @@ class ChainBomb(ParallelEnvironment, ChainBombBase):
         shuffle_row_wise(locs)
         selected_rand_locs = locs[:, :8 * 16].reshape((num_fields, 8, 16))
         return self.locs_to_coords(selected_rand_locs)
-
-    def step(self, actions):
-        points = self.ignite_explosion(actions)
-
-        # Use up bomb
-        self.inventories[range(self.num_par_envs), self.times] = 0
-        self.num_bombs_inv -= 1
-
-        self.times += 1
-
-        # End game if all bombs are used up
-        self.game_overs = self.num_bombs_inv == 0
-
-        # Declare win if all targets are eliminated
-        all_targets_eliminated = self.obj_nums[:, 0] == 0
-        self.game_overs[all_targets_eliminated] = True
-        self.wins[all_targets_eliminated] = True
-
-        # Sum up points of all bombs left in inventory
-        points[self.wins] += self.num_bombs_inv[self.wins].astype("int32") * POINT_TABLE[8]
-
-        assert np.all(points % 10 == 0)
-
-        self.scores += points
-        reward = points / 100
-
-        # Nullify score for lost levels
-        lost = self.game_overs & ~ self.wins
-        self.scores[lost] = 0
-        reward[lost] = -3
-
-        if self.mode == self.TEST_MODE and self.game_overs[0] and self.wins[0]:
-            self.update_highscore()
-
-        return reward, self.scores, self.game_overs, self.times, self.wins
 
     def ignite_explosion(self, actions):
         dropped_bombs = self.inventories[range(self.num_par_envs), self.times] - 1
@@ -442,6 +425,23 @@ class ChainBomb(ParallelEnvironment, ChainBombBase):
                 self.obj_coords[env_id, obj_type, obj_idx + 1:self.obj_nums[env_id, obj_type]]
         self.obj_nums[env_id, obj_type] -= 1
 
+    def set_mode(self, mode):
+        """Sets the level selection/generation mode."""
+        if mode == self.TRAIN_MODE:
+            self.current_level = None
+            self.mode = mode
+            self.reset()
+        elif mode == self.TEST_MODE:
+            if self.num_par_envs == 1:
+                self.current_level = 0
+                self.mode = mode
+                self.reset()
+            else:
+                print("Warning: Test mode only allowed if environment simulates a single instance. "
+                      "This environment, however, has %d parallel instances." % self.num_par_envs)
+        else:
+            raise Exception("Invalid mode number given.")
+
     def load_highscores(self):
         num_levels = len(self.levels_list)
 
@@ -518,7 +518,7 @@ class ChainBomb(ParallelEnvironment, ChainBombBase):
         action = coords[0] * self.width + coords[1]
         return action
 
-    def has_levels(self):
+    def has_test_levels(self):
         return len(self.levels_list) > 0
 
     def generate_pretrain_data(self, num_instances):
@@ -908,7 +908,7 @@ class CBBaseRenderer:
             else:
                 inner_color = self.COLORS['background']
 
-            if bomb == 0 or i >= num_inv_bombs + turn_no:
+            if bomb == 0 or (turn_no is not None and i >= num_inv_bombs + turn_no):
                 # Draw empty inv field
                 pygame.draw.rect(self.screen, self.COLORS['field'], box_bounds)
                 pygame.draw.rect(self.screen, inner_color, inner_box_bounds)

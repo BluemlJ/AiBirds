@@ -4,11 +4,14 @@ import matplotlib.pyplot as plt
 import os
 import shutil
 import json
+import tensorflow as tf
 
 from src.envs.env import Environment
+from keras.optimizers.schedules import LearningRateSchedule
 
-WINDOW_SIZES = (5000, 100000, 500000)
+WINDOW_SIZES = (1000, 10000, 50000)
 WINDOW_SIZES_LOSS = (10, 50, 200)
+EXTREME_LOSS_FACTOR = 500
 
 
 class Statistics:
@@ -17,6 +20,7 @@ class Statistics:
         self.final_scores = []
         self.final_times = []
         self.train_losses = []
+        self.learning_rates = []
         self.wins = []
 
         # ToDo: save number of transitions
@@ -51,6 +55,9 @@ class Statistics:
     def denote_loss(self, loss):
         self.train_losses += [loss]
 
+    def denote_learning_rate(self, learning_rate):
+        self.learning_rates += [learning_rate]
+
     def get_length(self):
         return len(self.final_scores)
 
@@ -75,6 +82,15 @@ class Statistics:
     def get_train_losses(self):
         return np.array(self.train_losses)
 
+    def get_learning_rates(self):
+        return np.array(self.learning_rates)
+
+    def get_current_learning_rate(self):
+        if len(self.learning_rates) == 0:
+            return np.nan
+        else:
+            return self.learning_rates[-1]
+
     def get_records(self):
         if self.return_record is np.nan:
             self.compute_records()
@@ -89,7 +105,7 @@ class Statistics:
     def get_stats_dict(self):
         return {"returns": self.final_returns, "scores": self.final_scores,
                 "times": self.final_times, "losses": self.train_losses,
-                "wins": self.wins}
+                "wins": self.wins, "learning_rates": self.learning_rates}
 
     def set_stats(self, stats_dict):
         self.final_returns = stats_dict["returns"]
@@ -97,6 +113,7 @@ class Statistics:
         if self.time_relevant:
             self.final_times = stats_dict["times"]
         self.train_losses = stats_dict["losses"]
+        self.learning_rates = stats_dict["learning_rates"]
         if self.win_relevant:
             self.wins = stats_dict["wins"]
 
@@ -158,6 +175,7 @@ class Statistics:
                 "\n   Time record:               %.0f" % time_record
 
         stats_text += "\n   Loss (50 MA):              %.4f" % avg_loss + \
+                      "\n   Learning rate:             %.6f" % self.get_current_learning_rate() + \
                       "\n------" \
                       "\n   " + "{:27s}".format("Comp time (last %d):" % print_stats_period) + \
                       "%d s" % np.round(comp_time) + \
@@ -181,6 +199,15 @@ class Statistics:
                                     output_path=out_path + "loss.png",
                                     logarithmic=True)
 
+            # Plot learning rate line chart
+            if self.get_current_learning_rate() is not np.nan:
+                plt.plot(self.get_learning_rates())
+                plot(title="Learning rate history",
+                     xlabel="Train cycle", ylabel="Learning rate",
+                     output_path=out_path + "learning_rates.png",
+                     legend=False,
+                     logarithmic=False)
+
             # Plot time line chart
             if self.time_relevant:
                 plot_moving_average(self.get_final_times(),
@@ -189,16 +216,20 @@ class Statistics:
                                     output_path=out_path + "times.png")
 
             # Plot score line chart
-            plot_moving_average(self.get_final_scores(),
-                                title="Score history",
-                                ylabel="Score",
-                                output_path=out_path + "scores.png")
+            final_scores = self.get_final_scores()
+            if len(final_scores) > 0:
+                plot_moving_average(final_scores,
+                                    title="Score history",
+                                    ylabel="Score",
+                                    output_path=out_path + "scores.png")
 
             # Plot return line chart
-            plot_moving_average(self.get_final_returns(),
-                                title="Return history",
-                                ylabel="Return",
-                                output_path=out_path + "returns.png")
+            final_returns = self.get_final_returns()
+            if len(final_returns) > 0:
+                plot_moving_average(final_returns,
+                                    title="Return history",
+                                    ylabel="Return",
+                                    output_path=out_path + "returns.png")
 
             # Plot win-loss-ratio line chart
             if self.win_relevant:
@@ -208,9 +239,9 @@ class Statistics:
                                     output_path=out_path + "wins.png")
 
     def log_extreme_losses(self, individual_losses, trans_ids, predictions, targets, memory, env, logger):
-        moving_avg_loss = get_moving_avg_val(self.get_train_losses(), 10)
+        moving_avg_loss = get_moving_avg_val(self.get_train_losses(), WINDOW_SIZES_LOSS[0])
         if moving_avg_loss > 0:
-            extreme_loss = individual_losses > (moving_avg_loss * 1000)
+            extreme_loss = individual_losses > (moving_avg_loss * EXTREME_LOSS_FACTOR)
             if np.any(extreme_loss):
                 print("\033[93mExtreme loss encountered!\033[0m")
                 extreme_loss_ids = np.where(extreme_loss)[0]
@@ -283,16 +314,18 @@ class Observations:
         self.rewards = np.zeros((buffer_size, num_envs), dtype='float32')
         self.times = np.zeros((buffer_size, num_envs), dtype='uint')
 
-        self.buff_ptr = 0  # the pointer pointing at the current buffer position
+        self.buff_ptr = 0  # the buffer pointer, pointing at the next transition's place
         self.ep_beg_ptrs = np.zeros(num_envs, dtype='int')  # pointing at each episode's first transition
 
         self.curr_scores = np.zeros(num_envs, dtype='int')
         self.curr_returns = np.zeros(num_envs, dtype='float')
 
     def save_observations(self, states, actions, scores, rewards, times):
+        # preprocess data
         image_states, numerical_states = states
         score_gains = scores - self.curr_scores
 
+        # save data
         self.image_states[self.buff_ptr] = image_states
         self.numerical_states[self.buff_ptr] = numerical_states
         self.actions[self.buff_ptr] = actions
@@ -303,10 +336,14 @@ class Observations:
         self.curr_scores[:] = scores
         self.curr_returns += rewards
 
+        # handle pointers
         self.increment()
+        self.handle_full_episodes()
 
     def increment(self):
         self.buff_ptr = (self.buff_ptr + 1) % self.size
+
+    def handle_full_episodes(self):
         max_len_episodes = self.ep_beg_ptrs == self.buff_ptr
         self.ep_beg_ptrs[max_len_episodes] += 1
         self.ep_beg_ptrs[max_len_episodes] %= self.size
@@ -314,7 +351,7 @@ class Observations:
     def get_observations(self, idx):
         ep_beg_ptr = self.ep_beg_ptrs[idx]
 
-        if ep_beg_ptr < self.buff_ptr:
+        if ep_beg_ptr <= self.buff_ptr:
             obs_image_states = self.image_states[ep_beg_ptr:self.buff_ptr, idx]
             obs_numerical_states = self.numerical_states[ep_beg_ptr:self.buff_ptr, idx]
             obs_actions = self.actions[ep_beg_ptr:self.buff_ptr, idx]
@@ -354,6 +391,9 @@ class Logger:
         self.step_stats_file = open(out_path + "step_stats.txt", "a", buffering=1)
         self.records_file = open(out_path + "records.txt", "a", buffering=1)
         self.extreme_loss_file = open(out_path + "extreme_losses.txt", "a", buffering=1)
+        self.extreme_loss_file.write("Here, training instances with a loss larger than %.0f times the "
+                                     "%d-moving average loss of the most recent training cycles will be logged.\n\n"
+                                     % (EXTREME_LOSS_FACTOR, WINDOW_SIZES_LOSS[0]))
         self.log_file = open(out_path + "log.txt", "a", buffering=1)
 
     def log_step_statistics(self, step_statistics):
@@ -365,9 +405,9 @@ class Logger:
         self.records_file.write(text)
 
     def log_extreme_loss(self, train_cycle, loss, ma_loss, pred_q, target_q, trans_text):
-        text = "Extreme loss encountered in train cycle %d!" % train_cycle + \
+        text = "Extreme loss encountered in train cycle %d." % train_cycle + \
                "\nExample loss: %.4f" % loss + \
-               "\n10 moving avg. loss: %.4f" % ma_loss + \
+               "\n%d moving avg. loss: %.4f" % (WINDOW_SIZES_LOSS[0], ma_loss) + \
                "\nPredicted Q-values: " + pred_q + \
                "\nTarget Q-values: " + target_q + \
                trans_text + "\n"
@@ -381,6 +421,35 @@ class Logger:
         self.records_file.close()
         self.extreme_loss_file.close()
         self.log_file.close()
+
+
+class WarmUpLRSchedule(LearningRateSchedule):
+    def __init__(self, initial_learning_rate, warmup_steps):
+        super(WarmUpLRSchedule, self).__init__()
+        self.initial_learning_rate = initial_learning_rate
+        self.warmup_steps = warmup_steps
+
+    def __call__(self, step):
+        warmup_progress = step / self.warmup_steps
+        return self.initial_learning_rate * tf.minimum(warmup_progress, 1)
+
+    def get_config(self):
+        return {
+            "initial_learning_rate": self.initial_learning_rate,
+            "warmup_steps": self.warmup_steps
+        }
+
+
+def plot(title, xlabel, ylabel, output_path, legend=False, logarithmic=False):
+    plt.title(title)
+    plt.xlabel(xlabel)
+    plt.ylabel(ylabel)
+    if logarithmic:
+        plt.yscale("log")
+    if legend:
+        plt.legend()
+    plt.savefig(output_path, dpi=400)
+    plt.show()
 
 
 def get_moving_avg_val(values, window_size):
@@ -411,14 +480,7 @@ def plot_moving_average(values, title, ylabel, output_path, window_sizes=WINDOW_
     if validation_values is not None and validation_period is not None:
         add_validation_plot(validation_values, validation_period)
 
-    plt.title(title)
-    plt.xlabel(xlabel)
-    plt.ylabel(ylabel)
-    if logarithmic:
-        plt.yscale("log")
-    plt.legend()
-    plt.savefig(output_path, dpi=400)
-    plt.show()
+    plot(title, xlabel, ylabel, output_path, True, logarithmic)
 
 
 def add_validation_plot(validation_values, validation_period):
@@ -445,12 +507,7 @@ def plot_validation(values, title, ylabel, output_path):
 
     plt.bar(range(number_chunks), avg_scores, color='silver', label="Average per level type")
     plt.hlines(average, xmin=0, xmax=number_chunks - 1, colors=['#009d81'], label="Total average")
-    plt.title(title)
-    plt.xlabel("Level type")
-    plt.ylabel(ylabel)
-    plt.legend()
-    plt.savefig(output_path, dpi=400)
-    plt.show()
+    plot(title, "Level type", ylabel, output_path, True, False)
 
 
 def plot_highscores(highscores_ai, highscores_human, output_path=None):
@@ -523,24 +580,24 @@ def compare_statistics(model_names, env, labels=None):
 
     # Generate all (relevant) comparison plots
     plot_comparison(out_path="out/comparison_plots/returns.png", comparison_values=returns, labels=labels,
-                    title="Return history comparison", ylabel="Return", window_size=WINDOW_SIZES[-1])
+                    title="Return history comparison", ylabel="Return", window_size=WINDOW_SIZES[1])
     plot_comparison(out_path="out/comparison_plots/scores.png", comparison_values=scores, labels=labels,
-                    title="Score history comparison", ylabel="Score", window_size=WINDOW_SIZES[-1])
+                    title="Score history comparison", ylabel="Score", window_size=WINDOW_SIZES[1])
     plot_comparison(out_path="out/comparison_plots/log_scores.png", comparison_values=scores, labels=labels,
-                    title="Score history comparison", ylabel="Score", window_size=WINDOW_SIZES[-1], logarithmic=True)
+                    title="Score history comparison", ylabel="Score", window_size=WINDOW_SIZES[1], logarithmic=True)
     if env.TIME_RELEVANT:
         plot_comparison(out_path="out/comparison_plots/times.png", comparison_values=times, labels=labels,
                         title="Episode length history comparison", ylabel="Time (game ticks)",
-                        window_size=WINDOW_SIZES[-1])
+                        window_size=WINDOW_SIZES[1])
         plot_comparison(out_path="out/comparison_plots/log_times.png", comparison_values=times, labels=labels,
                         title="Episode length history comparison", ylabel="Time (game ticks)",
-                        window_size=WINDOW_SIZES[-1], logarithmic=True)
+                        window_size=WINDOW_SIZES[1], logarithmic=True)
     if env.WINS_RELEVANT:
         plot_comparison(out_path="out/comparison_plots/wins.png", comparison_values=wins, labels=labels,
-                        title="Win-Ratio", ylabel="Win proportion", window_size=WINDOW_SIZES[-1])
+                        title="Win-Ratio", ylabel="Win proportion", window_size=WINDOW_SIZES[1])
     plot_comparison(out_path="out/comparison_plots/losses.png", comparison_values=losses, labels=labels,
                     title="Training loss history comparison", ylabel="Loss", xlabel="Train cycle", logarithmic=True,
-                    window_size=WINDOW_SIZES_LOSS[-1])
+                    window_size=WINDOW_SIZES_LOSS[1])
 
 
 def plot_comparison(out_path, comparison_values, labels, title, ylabel, window_size, xlabel="Episode",
@@ -548,14 +605,7 @@ def plot_comparison(out_path, comparison_values, labels, title, ylabel, window_s
     for values, label in zip(comparison_values, labels):
         add_moving_avg_plot(values, window_size, label=label)
 
-    plt.title(title)
-    plt.xlabel(xlabel)
-    plt.ylabel(ylabel)
-    if logarithmic:
-        plt.yscale("log")
-    plt.legend()
-    plt.savefig(out_path, dpi=400)
-    plt.show()
+    plot(title, xlabel, ylabel, out_path, True, logarithmic)
 
 
 def check_for_existing_model(path):
@@ -569,12 +619,13 @@ def check_for_existing_model(path):
 
 
 def hyperparams_to_json(out_path, num_parallel_envs, use_dueling, use_double, learning_rate, latent_dim,
-                        latent_a_dim, latent_v_dim, obs_buf_size, exp_buf_size):
+                        latent_depth, latent_a_dim, latent_v_dim, obs_buf_size, exp_buf_size):
     hyperparams_dict = {"num_parallel_envs": num_parallel_envs,
                         "use_dueling": use_dueling,
                         "use_double": use_double,
                         "learning_rate": learning_rate,
                         "latent_dim": latent_dim,
+                        "latent_depth": latent_depth,
                         "latent_a_dim": latent_a_dim,
                         "latent_v_dim": latent_v_dim,
                         "obs_buf_size": obs_buf_size,

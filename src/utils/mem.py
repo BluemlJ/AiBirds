@@ -15,15 +15,17 @@ class ReplayMemory:
         self.image_state_shape = image_state_shape
         self.numerical_state_shape = numerical_state_shape
 
-        self.image_states = None  # 3d data (2d images with channels)
-        self.numerical_states = None  # 1d data (vectors)
-        self.actions = None
-        self.scores = None  # score *difference* between two transitions
-        self.terminals = None
-        self.priorities = None
-        self.rewards = None
-        self.returns = None  # discounted Monte Carlo returns
-        self._initialize_experience()
+        # 2d data (plus 1 dimension for channels):
+        self.image_states = np.zeros(shape=np.append([self.memory_size], self.image_state_shape), dtype='bool')
+        # 1d data:
+        self.numerical_states = np.zeros(shape=np.append([self.memory_size], self.numerical_state_shape),
+                                         dtype='float32')
+        self.actions = np.zeros(shape=self.memory_size, dtype='int')
+        self.scores = np.zeros(shape=self.memory_size, dtype='int')  # score *difference* between two transitions
+        self.terminals = np.zeros(shape=self.memory_size, dtype='bool')
+        self.priorities = np.zeros(shape=self.memory_size, dtype='float32')
+        self.rewards = np.zeros(shape=self.memory_size, dtype='float32')
+        self.returns = np.zeros(shape=self.memory_size, dtype='float32')  # discounted Monte Carlo returns
 
         self.gamma = None  # discount factor used for return computation
 
@@ -31,16 +33,6 @@ class ReplayMemory:
 
         # Currently opened data files (used by Dask for efficiency)
         self.open_files = []
-
-    def _initialize_experience(self):
-        self.image_states = np.empty(shape=np.append([self.memory_size], self.image_state_shape), dtype='bool')
-        self.numerical_states = np.empty(shape=np.append([self.memory_size], self.numerical_state_shape), dtype='float32')
-        self.actions = np.empty(shape=self.memory_size, dtype='int')
-        self.scores = np.empty(shape=self.memory_size, dtype='int')
-        self.terminals = np.empty(shape=self.memory_size, dtype='bool')
-        self.priorities = np.empty(shape=self.memory_size, dtype='float32')
-        self.rewards = np.empty(shape=self.memory_size, dtype='float32')
-        self.returns = np.empty(shape=self.memory_size, dtype='float32')
 
     def memorize(self, obs_states, obs_actions, obs_scores, obs_rewards, gamma):
         """Saves the observations of a whole episode."""
@@ -119,6 +111,9 @@ class ReplayMemory:
 
     def get_returns(self):
         return self.returns[:self.stack_ptr]
+
+    def get_scores(self):
+        return self.scores[:self.stack_ptr]
 
     def get_terminals(self):
         return self.terminals[:self.stack_ptr]

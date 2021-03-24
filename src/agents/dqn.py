@@ -1,20 +1,19 @@
-import keras
 import time
-
-import tensorflow as tf
+import os
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = "2"  # let TF only print errors
 
 from src.utils.utils import *
 from src.utils.mem import ReplayMemory
 from src.agents.nns import *
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"  # make GPU visible
 
 gpus = tf.config.experimental.list_physical_devices('GPU')
-memory_config = [tf.config.experimental.VirtualDeviceConfiguration(memory_limit=2048)]
+memory_config = [tf.config.experimental.VirtualDeviceConfiguration(memory_limit=4096)]
 tf.config.experimental.set_virtual_device_configuration(gpus[0], memory_config)
 
 # Miscellaneous
-PLOT_PERIOD = 2000  # number of transitions between each learning statistics plot
+PLOT_PERIOD = 5000  # number of transitions between each learning statistics plot
 PRINT_STATS_PERIOD = 100
 MA_WINDOW_SIZE = 10000
 CHECKPOINT_SAVE_PERIOD = 5000
@@ -25,8 +24,9 @@ class TFDQNAgent:
     """Deep Q-Network (DQN) agent for playing Tetris, Snake or other games"""
 
     def __init__(self, env, num_parallel_envs, name, use_dueling=True, use_double=True,
-                 latent_dim=64, latent_a_dim=64, latent_v_dim=64, latent_depth=1,
-                 learning_rate=0.0001, obs_buf_size=100, exp_buf_size=10000,
+                 latent_dim=64, latent_depth=1, latent_a_dim=64, latent_v_dim=64,
+                 learning_rate=0.0001, warmup_batches=0,
+                 obs_buf_size=100, exp_buf_size=10000,
                  use_pretrained=False, override=False, **kwargs):
         """
         :param env: The environment in which the agent acts
@@ -38,6 +38,7 @@ class TFDQNAgent:
         :param latent_a_dim: Width of the latent layer of the advantage network from Dueling Networks
         :param latent_v_dim: Width of the latent layer of the state-value network from Dueling Networks
         :param learning_rate: The higher the faster but more unstable the agent learns
+        :param warmup_batches: Duration of linear LR warm-up (0 for no warm-up)
         :param kwargs: Arguments for the used environment (e.g., height and width)
         """
 
@@ -63,14 +64,17 @@ class TFDQNAgent:
 
         # Training hyperparameters
         self.latent_dim = latent_dim
+        self.latent_depth = latent_depth
         self.latent_a_dim = latent_a_dim
         self.latent_v_dim = latent_v_dim
-        self.latent_depth = latent_depth
-        self._optimizer = tf.optimizers.Adam(learning_rate=learning_rate)
-        self.training_loss_fn = keras.losses.MeanSquaredError(reduction=tf.keras.losses.Reduction.NONE)
-        self.training_loss_metric = keras.metrics.MeanSquaredError()
+        self.learning_rate = learning_rate
+        lr_schedule = WarmUpLRSchedule(initial_learning_rate=learning_rate, warmup_steps=warmup_batches)
+        self.optimizer = tf.optimizers.Adam(learning_rate=lr_schedule)
+        self.training_loss_fn = tf.keras.losses.MeanSquaredError(reduction=tf.keras.losses.Reduction.NONE)
+        self.training_loss_metric = tf.keras.metrics.MeanSquaredError()
 
         # Initialize the architecture of the acting and learning part of the DQN (theta)
+        print("Initializing DQN architecture...")
         self.inputs, latent = get_input_model(self.env, self.latent_dim, self.latent_depth)
         self.outputs = None
         self.online_network = self._build_compile_model(latent)
@@ -85,7 +89,7 @@ class TFDQNAgent:
         self.memory = None
 
         hyperparams_to_json(self.out_path, num_parallel_envs, use_dueling, use_double, learning_rate, latent_dim,
-                            latent_a_dim, latent_v_dim, obs_buf_size, exp_buf_size)
+                            latent_depth, latent_a_dim, latent_v_dim, obs_buf_size, exp_buf_size)
 
         print('DQN agent initialized.')
 
@@ -116,7 +120,7 @@ class TFDQNAgent:
         self.outputs = [q_values]
 
         model = tf.keras.Model(inputs=self.inputs, outputs=self.outputs)
-        model.compile(loss='huber_loss', optimizer=self._optimizer)
+        model.compile(loss='huber_loss', optimizer=self.optimizer)
 
         model.summary()
         # the following needs separate GraphViz installation from https://graphviz.gitlab.io/download/
@@ -129,7 +133,7 @@ class TFDQNAgent:
         if self.double:
             # Initialize the architecture of a separate, shadowed (target) version of the DQN (theta-)
             model = tf.keras.Model(inputs=self.inputs, outputs=self.outputs)
-            model.compile(loss='huber_loss', optimizer=self._optimizer)
+            model.compile(loss='huber_loss', optimizer=self.optimizer)
             self.target_network = model
             self.target_network.set_weights(self.online_network.get_weights())
         else:
@@ -242,7 +246,7 @@ class TFDQNAgent:
                 self.stats.plot_stats(self.out_path, self.memory)
 
             # If environment has test levels, test on it
-            if i % TEST_PERIOD == 0 and self.env.has_levels():
+            if i % TEST_PERIOD == 0 and self.env.has_test_levels():
                 self.test_on_levels()
 
             # Update the network weights every train_period levels to fit experience
@@ -350,6 +354,7 @@ class TFDQNAgent:
                                                         batch_size=batch_size, sample_weight=sample_weight)
 
         self.stats.denote_loss(loss)
+        self.stats.denote_learning_rate(self.optimizer._decayed_lr('float32').numpy())
         self.stats.log_extreme_losses(individual_losses, trans_ids, predictions, targets,
                                       self.memory, self.env, logger)
 
@@ -405,7 +410,7 @@ class TFDQNAgent:
         grads = tape.gradient(cumulated_loss, self.online_network.trainable_weights)
 
         # Run one step of gradient descent by the optimizer
-        self._optimizer.apply_gradients(zip(grads, self.online_network.trainable_weights))
+        self.optimizer.apply_gradients(zip(grads, self.online_network.trainable_weights))
 
         self.training_loss_metric.update_state(y, out)
 
@@ -626,8 +631,9 @@ class TFDQNAgent:
                    "gamma: %f\n" % gamma + \
                    "delta: %f\n" % delta + \
                    "delta_anneal: %f\n\n" % delta_anneal + \
-                   "learning_rate: %f\n" % self._optimizer.get_config()['learning_rate'] + \
+                   "learning_rate: %f\n" % self.learning_rate + \
                    "latent_dim: %d\n" % self.latent_dim + \
+                   "latent_depth: %d\n" % self.latent_depth + \
                    "latent_a_dim: %d\n" % self.latent_a_dim + \
                    "latent_v_dim: %d\n\n" % self.latent_v_dim + \
                    "obs_buf_size: %d\n" % self.obs_buf_size + \

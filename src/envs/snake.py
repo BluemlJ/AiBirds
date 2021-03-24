@@ -18,7 +18,7 @@ MAX_TIME_WITHOUT_SCORE = 288  # to avoid infinite loops 288
 class Snake(ParallelEnvironment):
     NAME = "snake"
     LEVELS = False
-    TIME_RELEVANT = False
+    TIME_RELEVANT = True
     WINS_RELEVANT = False
 
     def __init__(self, num_par_envs, height=12, width=24):
