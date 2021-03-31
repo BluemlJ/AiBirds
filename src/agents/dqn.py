@@ -1,10 +1,12 @@
 import time
 import os
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = "2"  # let TF only print errors
+import keras
+import tensorflow as tf
 
 from src.utils.utils import *
 from src.utils.mem import ReplayMemory
-from src.agents.nns import *
+from src.agents.models.q_network import QNetwork
 
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"  # make GPU visible
 
@@ -23,111 +25,89 @@ TEST_PERIOD = 2000
 class TFDQNAgent:
     """Deep Q-Network (DQN) agent for playing Tetris, Snake or other games"""
 
-    def __init__(self, env, num_parallel_envs, name, use_dueling=True, use_double=True,
-                 latent_dim=64, latent_depth=1, latent_a_dim=64, latent_v_dim=64,
-                 learning_rate=0.0001, warmup_batches=0,
-                 obs_buf_size=100, exp_buf_size=10000,
+    def __init__(self, env_type, stem_model: keras.Model, q_network: QNetwork,
+                 name, num_parallel_envs, use_double=True,
+                 obs_buf_size=100, mem_size=10000,
                  use_pretrained=False, override=False, **kwargs):
-        """
-        :param env: The environment in which the agent acts
+        """Constructor
+        :param env_type: The environment in which the agent acts
+        :param stem_model: The main stem model
+        :param q_network: The Q-network (coming after the stem model)
         :param num_parallel_envs: The number of environments which are executed simultaneously
         :param name: A string identifying the agent in file names
-        :param use_dueling: If True the Dueling Networks extension is used
         :param use_double: If True the Double Q-Learning extension is used
-        :param latent_dim: Width of the main latent layer (first layer after conv layers)
-        :param latent_a_dim: Width of the latent layer of the advantage network from Dueling Networks
-        :param latent_v_dim: Width of the latent layer of the state-value network from Dueling Networks
-        :param learning_rate: The higher the faster but more unstable the agent learns
-        :param warmup_batches: Duration of linear LR warm-up (0 for no warm-up)
         :param kwargs: Arguments for the used environment (e.g., height and width)
         """
 
+        print("Initializing DQN agent...")
+
+        # General
         self.name = name
+
+        # Environment
         self.num_par_envs = num_parallel_envs
-
-        self.env_type = env
-        self.env = None
-        self.env_args = kwargs
-        self.image_state_shape = None
-        self.numerical_state_shape = None
-        self.num_actions = None
-
-        self.setup_env(num_parallel_envs)
+        self.env_type = env_type
+        self.env, self.state_shape_2d, self.state_shape_1d, self.num_actions = self.init_env(kwargs)
 
         self.out_path = self.setup_out_path(override)
 
-        self.stats = Statistics(env)  # Information collected over the course of training
+        # Model architecture
+        self.stem_model = stem_model
+        self.stem_model.build(self.env.get_state_shapes())
+        self.q_network = q_network
+        self.q_network.set_num_actions(self.num_actions)
+        self.q_network.build()
+        self.inputs = self.stem_model.inputs
+        self.latent = self.stem_model.outputs[0]
+        self.outputs = None
+        self.optimizer = tf.optimizers.Adam()
+        self.online_network = self._build_compile_model()
 
-        # Set wanted features
-        self.dueling = use_dueling
+        # Double Q-Learning
         self.double = use_double
+        if use_pretrained:
+            self.load_pretrained_model()
+        self.target_network = None  # for double Q-learning
+        self.init_target_network()
 
-        # Training hyperparameters
-        self.latent_dim = latent_dim
-        self.latent_depth = latent_depth
-        self.latent_a_dim = latent_a_dim
-        self.latent_v_dim = latent_v_dim
-        self.learning_rate = learning_rate
-        lr_schedule = WarmUpLRSchedule(initial_learning_rate=learning_rate, warmup_steps=warmup_batches)
-        self.optimizer = tf.optimizers.Adam(learning_rate=lr_schedule)
+        # Training loss
         self.training_loss_fn = tf.keras.losses.MeanSquaredError(reduction=tf.keras.losses.Reduction.NONE)
         self.training_loss_metric = tf.keras.metrics.MeanSquaredError()
 
-        # Initialize the architecture of the acting and learning part of the DQN (theta)
-        print("Initializing DQN architecture...")
-        self.inputs, latent = get_input_model(self.env, self.latent_dim, self.latent_depth)
-        self.outputs = None
-        self.online_network = self._build_compile_model(latent)
-        if use_pretrained:
-            self.load_pretrained_model()
-        self.target_network = None
-        self.init_target_network()
-
+        # Buffers, memory, and statistics
         self.obs_buf_size = obs_buf_size
-        self.exp_buf_size = exp_buf_size
+        self.stats = Statistics(env_type)  # Information collected over the course of training
+        self.mem_size = mem_size
+        self.memory = ReplayMemory(memory_size=self.mem_size,
+                                   image_state_shape=self.state_shape_2d,
+                                   numerical_state_shape=self.state_shape_1d)
 
-        self.memory = None
-
-        hyperparams_to_json(self.out_path, num_parallel_envs, use_dueling, use_double, learning_rate, latent_dim,
-                            latent_depth, latent_a_dim, latent_v_dim, obs_buf_size, exp_buf_size)
+        # For training
+        self.learning_rate = None
+        self.epsilon = None
 
         print('DQN agent initialized.')
 
-    def _build_compile_model(self, latent):
-        # Implementation of the Dueling Network principle
-        if self.dueling:
-            # State value prediction
-            latent_v = Dense(self.latent_v_dim, name='latent_V', activation="relu")(latent)
-            state_value = Dense(1, name='V')(latent_v)
-
-            # Advantage prediction
-            latent_a = Dense(self.latent_a_dim, name='latent_A', activation="relu")(latent)
-            advantage = Dense(self.num_actions, name='A')(latent_a)
-
-            # Q(s, a) = V(s) + A(s, a) - A_mean(s, a)
-            q_values = tf.add(state_value,
-                              tf.subtract(advantage, tf.reduce_mean(advantage, axis=1,
-                                                                    keepdims=True,
-                                                                    name='A_mean'),
-                                          name='Sub'),
-                              name='Q')
-        else:
-            # Direct Q-value prediction
-            latent_feature_2 = tf.keras.layers.Dense(128, name='latent_2')(latent)
-            lrelu_feature = LeakyReLU()(latent_feature_2)
-            q_values = Dense(self.num_actions, name='Q')(lrelu_feature)
-
+    def _build_compile_model(self):
+        q_values = self.q_network(self.latent)
         self.outputs = [q_values]
 
         model = tf.keras.Model(inputs=self.inputs, outputs=self.outputs)
         model.compile(loss='huber_loss', optimizer=self.optimizer)
 
         model.summary()
+
         # the following needs separate GraphViz installation from https://graphviz.gitlab.io/download/
         # this helped for GraphViz bugfix: https://datascience.stackexchange.com/questions/74500
         tf.keras.utils.plot_model(model, to_file=self.out_path + 'model_plot.png', show_shapes=True,
                                   show_layer_names=True)
         return model
+
+    def init_env(self, env_args):
+        env = self.env_type(**env_args, num_par_envs=self.num_par_envs)
+        state_shape_2d, state_shape_1d = env.get_state_shapes()
+        num_actions = env.get_number_of_actions()
+        return env, state_shape_2d, state_shape_1d, num_actions
 
     def init_target_network(self):
         if self.double:
@@ -147,36 +127,37 @@ class TFDQNAgent:
 
         self.online_network.load_weights(pretrained_path + "/pretrained", by_name=True)
 
-    def setup_env(self, num_envs):
+    def reinit_env(self, num_envs, **kwargs):
         if self.env is not None:
             del self.env
-        self.env = self.env_type(**self.env_args, num_par_envs=num_envs)
-        self.image_state_shape, self.numerical_state_shape = self.env.get_state_shapes()
-        self.num_actions = self.env.get_number_of_actions()
+        self.num_par_envs = num_envs
+        self.env, self.state_shape_2d, self.state_shape_1d, self.num_actions = self.init_env(kwargs)
 
     def practice(self, num_parallel_steps,
-                 replay_period, replay_size,
+                 replay_period, replay_size_multiplier,
                  batch_size, replay_epochs,
+                 learning_rate: LearningRate,
                  sync_period, gamma,
-                 epsilon, epsilon_decay_mode, epsilon_decay_rate, epsilon_min,
+                 epsilon: Epsilon,
                  delta, delta_anneal,
                  alpha,
                  verbose=False):
         """The agent's main training routine.
 
         :param num_parallel_steps: Number of (parallel) transitions to play
-        :param replay_period: number of levels between each training of the online network
-        :param replay_size: Number of transitions to be learned from when learn() is invoked
+        :param replay_period: Number of levels between each training of the online network
+        :param replay_size_multiplier: Factor determining the number of transitions to be learned from each
+                                       train cycle (the replay size). Each time, the replay size is determined as
+                                       follows:
+                                       replay_size = replay_size_multiplier * new_transitions
         :param batch_size: Size of training batches used in the GPU/CPU to fit the model
         :param replay_epochs: Number of epochs per replay
+        :param learning_rate: (dynamic) learning rate used for training
         :param sync_period: The number of levels between each synchronization of online and target network. The
                             higher the number, the stronger Double Q-Learning and the less overestimation.
                             sync_period == 1 means "Double Q-Learning off"
         :param gamma: Discount factor
-        :param epsilon: Probability for random shot (epsilon greedy policy)
-        :param epsilon_decay_mode: The function used to decrease epsilon after each parallel step ("lin" or "exp")
-        :param epsilon_decay_rate: Decrease factor for epsilon
-        :param epsilon_min: Minimum value for epsilon which is not undercut over thr course of practicing
+        :param epsilon: Epsilon class, probability for random shot (epsilon greedy policy)
         :param delta: Trade-off factor between Monte Carlo target return and one-step target return,
                       delta = 1 means MC return, delta = 0 means one-step return
         :param delta_anneal: Decrease factor for delta
@@ -184,22 +165,21 @@ class TFDQNAgent:
         :param verbose:
         """
 
-        epsilon = Epsilon(value=epsilon, decay_mode=epsilon_decay_mode,
-                          decay_rate=epsilon_decay_rate, minimum=epsilon_min)
+        self.learning_rate = learning_rate
+        self.epsilon = epsilon
 
-        # Save all hyperparameters in txt file
-        self.write_hyperparams_file(num_parallel_steps, replay_period, replay_size, sync_period, epsilon, alpha,
-                                    gamma, delta, delta_anneal)
+        # Save all hyperparameters in txt and json file
+        self.write_hyperparams_file(num_parallel_steps, replay_period, replay_size_multiplier, sync_period,
+                                    alpha, gamma, delta, delta_anneal)
+        hyperparams_to_json(self.stem_model, self.q_network, self.out_path, self.num_par_envs, self.double,
+                            self.learning_rate, self.obs_buf_size, self.mem_size)
 
         logger = Logger(self.out_path)
 
-        # Initialize the memory where all the experience will be memorized
-        self.memory = ReplayMemory(memory_size=self.exp_buf_size,
-                                   image_state_shape=self.image_state_shape,
-                                   numerical_state_shape=self.numerical_state_shape)
-
         # Initialize observations buffer with fixed size
-        obs = Observations(self.obs_buf_size, self.num_par_envs, self.image_state_shape, self.numerical_state_shape)
+        obs = Observations(self.obs_buf_size, self.num_par_envs, self.state_shape_2d, self.state_shape_1d)
+
+        new_transitions = 0
 
         # Reset all environments
         self.env.reset()
@@ -237,6 +217,8 @@ class TFDQNAgent:
                         transition = self.memory.get_trans_text(self.memory.get_length() - 1, self.env)
                         logger.log_new_record(obs_return, transition)
 
+                    new_transitions += len(obs_rewards)
+
                 # Reset all finished envs and update their corresponding current variables
                 self.env.reset_for(fin_env_ids)
                 obs.begin_new_episode_for(fin_env_ids)
@@ -250,24 +232,19 @@ class TFDQNAgent:
                 self.test_on_levels()
 
             # Update the network weights every train_period levels to fit experience
-            if i % replay_period == 0 and self.memory.get_length() >= replay_size:
+            replay_size = replay_size_multiplier * new_transitions
+            if i % replay_period == 0 and replay_size > 0:  # and self.memory.get_length() >= replay_size:
                 self.learn(replay_size, gamma=gamma, delta=delta, alpha=alpha,
                            batch_size=batch_size, epochs=replay_epochs, logger=logger, verbose=verbose)
-
-                # Decrease learning rate if loss changed too little
-                """if self.stats.loss_stagnates() and self._optimizer.lr != 0.00001:
-                    self._optimizer.lr.assign(0.00001)
-                    log_text = "Learning rate decreased in train cycle %d (episode %d).\n" % \
-                               (i // replay_period, self.stats.get_length())
-                    logger.log(log_text)"""
+                new_transitions = 0
 
             # Save model checkpoint
             if i % CHECKPOINT_SAVE_PERIOD == 0:
                 self.save(overwrite=True, checkpoint=True, checkpoint_no=self.stats.get_length())
 
             # Cut off old experience to reduce buffer load
-            if self.memory.get_length() > 0.95 * self.exp_buf_size:
-                self.memory.delete_first(n=int(0.2 * self.exp_buf_size))
+            if self.memory.get_length() > 0.95 * self.mem_size:
+                self.memory.delete_first(n=int(0.2 * self.mem_size))
 
             # Synchronize target and online network every sync_period levels
             if self.double and i % sync_period == 0:
@@ -349,12 +326,16 @@ class TFDQNAgent:
         targets[range(len(trans_ids)), actions] = target_returns
         sample_weight = np.abs(np.multiply(weights, td_errs))
 
+        # Update learning rate
+        new_lr = self.learning_rate.get_value(self.stats.current_run_episode_no)
+        self.optimizer.learning_rate.assign(new_lr)
+
         # Update the online network's weights
         loss, individual_losses, predictions = self.fit(inputs, targets, epochs=epochs, verbose=verbose,
                                                         batch_size=batch_size, sample_weight=sample_weight)
 
         self.stats.denote_loss(loss)
-        self.stats.denote_learning_rate(self.optimizer._decayed_lr('float32').numpy())
+        self.stats.denote_learning_rate(self.optimizer.learning_rate.numpy())
         self.stats.log_extreme_losses(individual_losses, trans_ids, predictions, targets,
                                       self.memory, self.env, logger)
 
@@ -369,7 +350,7 @@ class TFDQNAgent:
         train_dataset = train_dataset.shuffle(buffer_size=1024).batch(batch_size)
         train_loss = 0
         individual_losses = np.array([])
-        predictions = np.empty((0, self.env.get_number_of_actions()))
+        predictions = np.empty((0, self.num_actions))
 
         for epoch in range(epochs):
             if verbose:
@@ -479,7 +460,7 @@ class TFDQNAgent:
         print("Just playing around...")
 
         if self.num_par_envs != 1:
-            self.setup_env(1)
+            self.reinit_env(1)
             self.num_par_envs = 1
 
         for i in range(episodes):
@@ -547,6 +528,7 @@ class TFDQNAgent:
 
                 if render:
                     test_env.render()
+                    # time.sleep(0.35)
 
             test_scores[level] = score
 
@@ -599,46 +581,51 @@ class TFDQNAgent:
         self.stats.load(in_path=stats_path)
 
     def save_experience(self, experience_path=None, overwrite=False, compress=False):
-        if experience_path is None:
-            experience_path = "data/%d_%s.hdf5" % (self.memory.get_length(), self.name)
-        self.memory.export_experience(experience_path, overwrite, compress)
+        pass
 
     def restore_experience(self, experience_path=None, gamma=None):
-        if experience_path is None:
-            experience_path = "data/" + self.name
-        self.memory.import_experience(experience_path, gamma)
+        pass
 
     def forget(self):
-        self.memory = ReplayMemory(memory_size=self.exp_buf_size,
-                                   image_state_shape=self.image_state_shape,
-                                   numerical_state_shape=self.numerical_state_shape)
+        self.memory = ReplayMemory(memory_size=self.mem_size,
+                                   image_state_shape=self.state_shape_2d,
+                                   numerical_state_shape=self.state_shape_1d)
 
     def print_transitions(self, ids):
         self.memory.print_trans_from(ids, self.env)
 
-    def write_hyperparams_file(self, num_parallel_steps, replay_period, replay_size, sync_period, epsilon, alpha,
-                               gamma, delta, delta_anneal):
+    def write_hyperparams_file(self, num_parallel_steps, replay_period, replay_size_multiplier, sync_period,
+                               alpha, gamma, delta, delta_anneal):
         hyperparams_file = open(self.out_path + "hyperparams.txt", "w+")
-        metadata = "num_parallel_steps: %d\n" % num_parallel_steps + \
-                   "num_parallel_envs: %d\n" % self.num_par_envs + \
-                   "replay_period: %d\n" % replay_period + \
-                   "replay_size: %d\n" % replay_size + \
-                   "sync_period: %d\n\n" % (sync_period if self.double else -1) + \
-                   "epsilon: %f\n" % epsilon.get_value() + \
-                   "epsilon_anneal: %f\n" % epsilon.get_decay() + \
-                   "epsilon_min: %f\n\n" % epsilon.get_minimum() + \
-                   "alpha: %f\n" % alpha + \
-                   "gamma: %f\n" % gamma + \
-                   "delta: %f\n" % delta + \
-                   "delta_anneal: %f\n\n" % delta_anneal + \
-                   "learning_rate: %f\n" % self.learning_rate + \
-                   "latent_dim: %d\n" % self.latent_dim + \
-                   "latent_depth: %d\n" % self.latent_depth + \
-                   "latent_a_dim: %d\n" % self.latent_a_dim + \
-                   "latent_v_dim: %d\n\n" % self.latent_v_dim + \
-                   "obs_buf_size: %d\n" % self.obs_buf_size + \
-                   "exp_buf_size: %d\n\n" % self.exp_buf_size
-        hyperparams_file.write(metadata)
+        text = "num_parallel_steps: %d" % num_parallel_steps + \
+               "\nnum_parallel_envs: %d" % self.num_par_envs + \
+               "\nreplay_period: %d" % replay_period + \
+               "\nreplay_size_multiplier: %d" % replay_size_multiplier + \
+               "\nsync_period: %d" % (sync_period if self.double else -1) + \
+               "\n\nalpha: %f" % alpha + \
+               "\ngamma: %f" % gamma + \
+               "\ndelta: %f" % delta + \
+               "\ndelta_anneal: %f" % delta_anneal + \
+               "\nobs_buf_size: %d" % self.obs_buf_size + \
+               "\nexp_buf_size: %d" % self.mem_size
+
+        text += "\n\nSTEM MODEL PARAMETERS:"
+        stem_config = self.stem_model.get_config()
+        text += config2text(stem_config)
+
+        text += "\n\nQ-NETWORK PARAMETERS:"
+        q_config = self.q_network.get_config()
+        text += config2text(q_config)
+
+        text += "\n\nLEARNING RATE:"
+        lr_config = self.learning_rate.get_config()
+        text += config2text(lr_config)
+
+        text += "\n\nEPSILON:"
+        eps_config = self.epsilon.get_config()
+        text += config2text(eps_config)
+
+        hyperparams_file.write(text + "\n\n")
         self.online_network.summary(print_fn=lambda x: hyperparams_file.write(x + '\n'))
         hyperparams_file.close()
 
@@ -655,7 +642,7 @@ def load_model(model_name, env, checkpoint_no=None):
     with open(in_path + "hyperparams.json") as infile:
         hyperparams_dict = json.load(infile)
 
-    agent = TFDQNAgent(env=env, name="tmp", override=True, **hyperparams_dict)
+    agent = TFDQNAgent(env_type=env, name="tmp", override=True, **hyperparams_dict)
     agent.restore(model_name, checkpoint_no)
     return agent
 

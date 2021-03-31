@@ -58,7 +58,8 @@ class ParallelEnvironment(Environment):
         pass
 
     def get_number_of_actions(self):
-        """Returns the number of possible actions performable in the environment."""
+        """Returns the number of possible actions performable in the environment. There
+        are environments where the number of actions is determined only after initialization."""
         return len(self.actions)
 
     def render(self):

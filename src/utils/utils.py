@@ -4,10 +4,9 @@ import matplotlib.pyplot as plt
 import os
 import shutil
 import json
-import tensorflow as tf
+import ctypes  # for flashing window in taskbar under Windows
 
 from src.envs.env import Environment
-from keras.optimizers.schedules import LearningRateSchedule
 
 WINDOW_SIZES = (1000, 10000, 50000)
 WINDOW_SIZES_LOSS = (10, 50, 200)
@@ -23,11 +22,13 @@ class Statistics:
         self.learning_rates = []
         self.wins = []
 
-        # ToDo: save number of transitions
+        self.current_run_episode_no = 0
 
-        self.return_record = -np.inf
-        self.score_record = 0
-        self.time_record = 0
+        self.return_records = []
+        self.score_records = []
+        self.time_records = []
+
+        self.ma_score_record = 0
 
         if env is not None:
             self.time_relevant = env.TIME_RELEVANT
@@ -36,9 +37,9 @@ class Statistics:
             self.time_relevant = False
             self.win_relevant = False
 
-    def denote_stats(self, final_return, final_score, final_time, win):
-        new_return_record = self.return_record < final_return
+        self.continue_training = False
 
+    def denote_stats(self, final_return, final_score, final_time, win):
         self.final_returns += [final_return]
         self.final_scores += [final_score]
         if self.time_relevant:
@@ -46,11 +47,14 @@ class Statistics:
         if self.win_relevant:
             self.wins += [win]
 
-        self.return_record = np.max((self.return_record, final_return))
-        self.score_record = np.max((self.score_record, final_score))
-        self.time_record = np.max((self.time_record, final_time))
+        return_record, score_record, time_record = self.get_records()
+        self.return_records += [np.max((return_record, final_return))]
+        self.score_records += [np.max((score_record, final_score))]
+        self.time_records += [np.max((time_record, final_time))]
 
-        return new_return_record
+        self.current_run_episode_no += 1
+
+        return return_record < final_return
 
     def denote_loss(self, loss):
         self.train_losses += [loss]
@@ -74,13 +78,31 @@ class Statistics:
         return np.array(self.final_times)
 
     def get_wins(self):
-        if not self.win_relevant:
-            return None
-        else:
+        if self.win_relevant:
             return np.array(self.wins)
+        else:
+            return []
 
     def get_train_losses(self):
         return np.array(self.train_losses)
+
+    def get_return_records(self):
+        return np.array(self.return_records)
+
+    def get_score_records(self):
+        return np.array(self.score_records)
+
+    def get_time_records(self):
+        if self.time_relevant:
+            return np.array(self.time_records)
+        else:
+            return []
+
+    def get_current_score(self):
+        if len(self.final_scores) > 0:
+            return self.final_scores[-1]
+        else:
+            return None
 
     def get_learning_rates(self):
         return np.array(self.learning_rates)
@@ -92,15 +114,28 @@ class Statistics:
             return self.learning_rates[-1]
 
     def get_records(self):
-        if self.return_record is np.nan:
-            self.compute_records()
-        return self.return_record, self.score_record, self.time_record
+        if len(self.return_records) == 0:
+            return -np.inf, 0, 0
+        else:
+            if self.time_relevant:
+                time_record = self.time_records[-1]
+            else:
+                time_record = 0
+            return self.return_records[-1], self.score_records[-1], time_record
 
     def compute_records(self):
-        self.return_record = np.max(self.final_returns, initial=-np.inf)
-        self.score_record = np.max(self.final_scores, initial=0)
+        num_episodes = self.get_length()
+        self.return_records = []
+        self.score_records = []
         if self.time_relevant:
-            self.time_record = np.max(self.final_times, initial=0)
+            self.time_records = []
+
+        for i in range(num_episodes):
+            return_record, score_record, time_record = self.get_records()
+            self.return_records += [np.max((return_record, self.final_returns[i]), initial=-np.inf)]
+            self.score_records += [np.max((score_record, self.final_scores[i]), initial=0)]
+            if self.time_relevant:
+                self.time_records += [np.max((time_record, self.final_times[i]), initial=0)]
 
     def get_stats_dict(self):
         return {"returns": self.final_returns, "scores": self.final_scores,
@@ -113,9 +148,14 @@ class Statistics:
         if self.time_relevant:
             self.final_times = stats_dict["times"]
         self.train_losses = stats_dict["losses"]
-        self.learning_rates = stats_dict["learning_rates"]
         if self.win_relevant:
             self.wins = stats_dict["wins"]
+        self.compute_records()
+        try:
+            self.learning_rates = stats_dict["learning_rates"]
+        except Exception as e:
+            print("Learning rate values missing or corrupted.")
+            print(e)
 
     def save(self, out_path):
         file_path = out_path + "stats.pckl"
@@ -134,7 +174,10 @@ class Statistics:
                 print(e)
             else:
                 print("Successfully loaded statistics from '%s'." % in_path)
-        self.compute_records()
+
+    def progress_stagnates(self):
+        """Returns true if loss did not change much and score did not increase."""
+        return self.loss_stagnates() and self.score_stagnates()
 
     def loss_stagnates(self):
         if len(self.train_losses) >= 1000:
@@ -147,20 +190,38 @@ class Statistics:
         else:
             return False
 
+    def score_stagnates(self):
+        """Returns true if score improvement was low. More precisely, returns True if the 1000 MA score did improve
+        by less than 5% during the last 4000 episodes."""
+        scores = self.get_final_scores()
+        if len(scores) >= 5000:
+            avg_score_old = np.average(scores[-5000:-4000])
+            avg_score_new = np.average(scores[-1000:])
+            return avg_score_new / avg_score_old < 1.05
+        else:
+            return False
+
+    def score_crashed(self, ma_score):
+        if ma_score is not None:
+            if ma_score < 0.05 * self.ma_score_record:
+                return True
+        return False
+
     def print_stats(self, par_step, total_par_steps, num_envs, comp_time, total_comp_time, print_stats_period,
                     epsilon, logger, ma_window_size=1000):
         # avg_return = get_moving_avg(self.get_final_returns(), ma_window_size)
-        avg_score = get_moving_avg_val(self.get_final_scores(), ma_window_size)
-        avg_loss = get_moving_avg_val(self.get_train_losses(), 50)
+        ma_score = get_moving_avg_val(self.get_final_scores(), ma_window_size)
+        ma_loss = get_moving_avg_val(self.get_train_losses(), 50)
+        self.ma_score_record = np.max((self.ma_score_record, ma_score))
 
         return_record, score_record, time_record = self.get_records()
         done_transitions = int(par_step * num_envs / 1000)
 
-        stats_text = "\n\033[1mParallel step %d/%d\033[0m" % (par_step, total_par_steps) + \
+        stats_text = "\n" + bold("Parallel step %d/%d" % (par_step, total_par_steps)) + \
                      "\n   Completed episodes:        %d" % self.get_length() + \
                      "\n   Transitions done:          %d k" % done_transitions + \
                      "\n   Epsilon:                   %.3f" % epsilon.get_value() + \
-                     "\n   " + "{:27s}".format("Score (%d k MA):" % (ma_window_size // 1000)) + ("%.1f" % avg_score) + \
+                     "\n   " + "{:27s}".format("Score (%d k MA):" % (ma_window_size // 1000)) + ("%.1f" % ma_score) + \
                      "\n   Score record:              %.0f" % score_record
 
         if self.win_relevant:
@@ -174,7 +235,7 @@ class Statistics:
                 "\n   " + "{:27s}".format("Time (%d k MA):" % (ma_window_size // 1000)) + ("%.1f" % avg_time) + \
                 "\n   Time record:               %.0f" % time_record
 
-        stats_text += "\n   Loss (50 MA):              %.4f" % avg_loss + \
+        stats_text += "\n   Loss (50 MA):              %.4f" % ma_loss + \
                       "\n   Learning rate:             %.6f" % self.get_current_learning_rate() + \
                       "\n------" \
                       "\n   " + "{:27s}".format("Comp time (last %d):" % print_stats_period) + \
@@ -184,11 +245,22 @@ class Statistics:
         print(stats_text)
         logger.log_step_statistics(stats_text + "\n")
 
+        if self.score_crashed(ma_score) and not self.continue_training:
+            question = orange("Score crashed! %d k MA score dropped by 95 %%. "
+                              "Still want to continue training? (y/n)" % (ma_window_size // 1000))
+            if not user_agrees_to(question):
+                quit()
+            else:
+                self.continue_training = True
+
     def plot_stats(self, out_path, memory):
         if self.get_length() >= 200:
             # Plot priorities bar chart
-            plot_priorities(memory.get_priorities(),  # useful to determine replay size
-                            output_path=out_path + "priorities.png")
+            plt.hist(memory.get_priorities(), range=None, bins=100)
+            plot(title="Transition priorities in experience set",
+                 xlabel="Priority value",
+                 ylabel="Number of transitions",
+                 output_path=out_path + "priorities.png")
 
             # Plot train loss line chart
             if self.get_train_cycle() > WINDOW_SIZES_LOSS[0]:
@@ -202,6 +274,7 @@ class Statistics:
             # Plot learning rate line chart
             if self.get_current_learning_rate() is not np.nan:
                 plt.plot(self.get_learning_rates())
+                plt.ylim(bottom=0)
                 plot(title="Learning rate history",
                      xlabel="Train cycle", ylabel="Learning rate",
                      output_path=out_path + "learning_rates.png",
@@ -214,6 +287,11 @@ class Statistics:
                                     title="Episode length history",
                                     ylabel="Time (game ticks)",
                                     output_path=out_path + "times.png")
+                plt.plot(self.time_records)
+                plot(title="Episode length records",
+                     xlabel="Episode",
+                     ylabel="Time (game ticks)",
+                     output_path=out_path + "time_records.png")
 
             # Plot score line chart
             final_scores = self.get_final_scores()
@@ -221,7 +299,13 @@ class Statistics:
                 plot_moving_average(final_scores,
                                     title="Score history",
                                     ylabel="Score",
-                                    output_path=out_path + "scores.png")
+                                    output_path=out_path + "scores.png",
+                                    show=True)
+                plt.plot(self.score_records)
+                plot(title="Score records",
+                     xlabel="Episode",
+                     ylabel="Score",
+                     output_path=out_path + "score_records.png")
 
             # Plot return line chart
             final_returns = self.get_final_returns()
@@ -230,6 +314,11 @@ class Statistics:
                                     title="Return history",
                                     ylabel="Return",
                                     output_path=out_path + "returns.png")
+                plt.plot(self.return_records)
+                plot(title="Return records",
+                     xlabel="Episode",
+                     ylabel="Return",
+                     output_path=out_path + "return_records.png")
 
             # Plot win-loss-ratio line chart
             if self.win_relevant:
@@ -254,20 +343,23 @@ class Statistics:
 class Epsilon:
     """A simple class providing basic functions to handle decaying epsilon greedy exploration."""
 
-    def __init__(self, value, decay_mode="exp", decay_rate=1, minimum=0):
+    def __init__(self, init_value, decay_mode="exp", decay_rate=1, minimum=0):
         """
-        :param value: Initial value of epsilon
+        :param init_value: Initial value of epsilon
+        :param decay_mode: The function used to decrease epsilon after each parallel step ("lin" or "exp")
         :param decay_rate: Decrease/anneal factor for epsilon used when decay() gets invoked
-        :param minimum: The value epsilon becomes in the limit through invoking decay()
+        :param minimum: Minimum value for epsilon which is never undercut over thr course of practice
         """
-        if value < minimum:
+        if init_value < minimum:
             raise ValueError("You must provide a value for epsilon larger than the minimum.")
 
         if decay_mode not in ["exp", "lin"]:
             raise ValueError("Invalid decay mode provided. You gave %s, but only 'exp' and 'lin' are allowed." %
                              decay_mode)
 
-        self.volatile_val = value - minimum
+        self.init_value = init_value
+        self.decay_mode = decay_mode
+        self.volatile_val = init_value - minimum
         self.rigid_val = minimum
         self.decay_rate = decay_rate
         if decay_mode == "exp":
@@ -299,6 +391,13 @@ class Epsilon:
             minimum = self.minimum
         self.volatile_val = value - minimum
         self.rigid_val = minimum
+
+    def get_config(self):
+        config = {"init_value": self.init_value,
+                  "decay_mode": self.decay_mode,
+                  "decay_rate": self.decay_rate,
+                  "minimum": self.minimum}
+        return config
 
 
 class Observations:
@@ -423,24 +522,36 @@ class Logger:
         self.log_file.close()
 
 
-class WarmUpLRSchedule(LearningRateSchedule):
-    def __init__(self, initial_learning_rate, warmup_steps):
-        super(WarmUpLRSchedule, self).__init__()
-        self.initial_learning_rate = initial_learning_rate
-        self.warmup_steps = warmup_steps
+class LearningRate:
+    """Custom learning rate scheduler, depending on number of current episode (in
+    contrast to current optimizer step). Features linear warmup and exponential decay."""
 
-    def __call__(self, step):
-        warmup_progress = step / self.warmup_steps
-        return self.initial_learning_rate * tf.minimum(warmup_progress, 1)
+    def __init__(self, initial_learning_rate, warmup_episodes=0, half_life_period=None):
+        self.initial_learning_rate = initial_learning_rate
+        self.warmup_episodes = warmup_episodes
+        self.half_life_period = half_life_period
+        self.decay_rate = 0.5 ** (1 / half_life_period)
+
+    def get_value(self, current_episode_no):
+        if current_episode_no < 0:
+            raise ValueError("Invalid episode number given. Number must be non-negative int.")
+
+        if current_episode_no < self.warmup_episodes:
+            return self.initial_learning_rate * current_episode_no / self.warmup_episodes
+        elif self.half_life_period is not None:
+            decay_episodes = current_episode_no - self.warmup_episodes
+            return self.initial_learning_rate * self.decay_rate ** decay_episodes
+        else:
+            return self.initial_learning_rate
 
     def get_config(self):
-        return {
-            "initial_learning_rate": self.initial_learning_rate,
-            "warmup_steps": self.warmup_steps
-        }
+        config = {"initial_learning_rate": self.initial_learning_rate,
+                  "warmup_episodes": self.warmup_episodes,
+                  "half_life_period": self.half_life_period}
+        return config
 
 
-def plot(title, xlabel, ylabel, output_path, legend=False, logarithmic=False):
+def plot(title, xlabel, ylabel, output_path, legend=False, logarithmic=False, show=False):
     plt.title(title)
     plt.xlabel(xlabel)
     plt.ylabel(ylabel)
@@ -449,7 +560,10 @@ def plot(title, xlabel, ylabel, output_path, legend=False, logarithmic=False):
     if legend:
         plt.legend()
     plt.savefig(output_path, dpi=400)
-    plt.show()
+    if show:
+        plt.show()
+    else:
+        plt.close()
 
 
 def get_moving_avg_val(values, window_size):
@@ -472,7 +586,7 @@ def get_moving_avg_lst(values, n):
 
 
 def plot_moving_average(values, title, ylabel, output_path, window_sizes=WINDOW_SIZES, xlabel="Episode",
-                        logarithmic=False, validation_values=None, validation_period=None):
+                        logarithmic=False, validation_values=None, validation_period=None, show=False):
     add_moving_avg_plot(values, window_sizes[0], 'silver')
     add_moving_avg_plot(values, window_sizes[1], 'black')
     add_moving_avg_plot(values, window_sizes[2], '#009d81')
@@ -480,7 +594,7 @@ def plot_moving_average(values, title, ylabel, output_path, window_sizes=WINDOW_
     if validation_values is not None and validation_period is not None:
         add_validation_plot(validation_values, validation_period)
 
-    plot(title, xlabel, ylabel, output_path, True, logarithmic)
+    plot(title, xlabel, ylabel, output_path, True, logarithmic, show)
 
 
 def add_validation_plot(validation_values, validation_period):
@@ -537,19 +651,7 @@ def angle_to_vector(alpha):
     return int(dx), int(dy)
 
 
-def plot_priorities(priorities, output_path=None, bin_range=None):
-    histogram = plt.hist(priorities, range=bin_range, bins=100)
-    plt.title("Transition priorities in experience set")
-    plt.xlabel("Priority value")
-    plt.ylabel("Number of transitions")
-    # plt.xscale("log")
-    if output_path is not None:
-        plt.savefig(output_path, dpi=800)
-    plt.show()
-    return histogram
-
-
-def compare_statistics(model_names, env, labels=None):
+def compare_statistics(model_names, env, labels=None, cut_at_episode=None, cut_at_train_cycle=None):
     """Takes a list of model names, retrieves their statistics and plots them."""
     base_path = "out/%s/" % env.NAME
     returns = []
@@ -557,6 +659,10 @@ def compare_statistics(model_names, env, labels=None):
     times = []
     losses = []
     wins = []
+    return_records = []
+    score_records = []
+    time_records = []
+    learning_rates = []
 
     # Gather multiple statistics
     for model_name in model_names:
@@ -564,11 +670,20 @@ def compare_statistics(model_names, env, labels=None):
         stats = Statistics(env)
         stats.load(in_path)
 
-        returns += [stats.get_final_returns()]
-        scores += [stats.get_final_scores()]
-        times += [stats.get_final_times()]
-        losses += [stats.get_train_losses()]
-        wins += [stats.get_wins()]
+        if cut_at_episode is None:
+            cut_at_episode = stats.get_length()
+        if cut_at_train_cycle is None:
+            cut_at_train_cycle = stats.get_train_cycle()
+
+        returns += [stats.get_final_returns()[:cut_at_episode]]
+        scores += [stats.get_final_scores()[:cut_at_episode]]
+        times += [stats.get_final_times()[:cut_at_episode]]
+        losses += [stats.get_train_losses()[:cut_at_train_cycle]]
+        wins += [stats.get_wins()[:cut_at_episode]]
+        return_records += [stats.get_return_records()[:cut_at_episode]]
+        score_records += [stats.get_score_records()[:cut_at_episode]]
+        time_records += [stats.get_time_records()[:cut_at_episode]]
+        learning_rates += [stats.get_learning_rates()[:cut_at_train_cycle]]
 
     # (Re-)create output folder
     if os.path.exists("out/comparison_plots"):
@@ -581,10 +696,16 @@ def compare_statistics(model_names, env, labels=None):
     # Generate all (relevant) comparison plots
     plot_comparison(out_path="out/comparison_plots/returns.png", comparison_values=returns, labels=labels,
                     title="Return history comparison", ylabel="Return", window_size=WINDOW_SIZES[1])
+    plot_comparison(out_path="out/comparison_plots/return_records.png", comparison_values=return_records, labels=labels,
+                    title="Return records comparison", ylabel="Return")
+
     plot_comparison(out_path="out/comparison_plots/scores.png", comparison_values=scores, labels=labels,
                     title="Score history comparison", ylabel="Score", window_size=WINDOW_SIZES[1])
     plot_comparison(out_path="out/comparison_plots/log_scores.png", comparison_values=scores, labels=labels,
                     title="Score history comparison", ylabel="Score", window_size=WINDOW_SIZES[1], logarithmic=True)
+    plot_comparison(out_path="out/comparison_plots/score_records.png", comparison_values=score_records, labels=labels,
+                    title="Score records comparison", ylabel="Score")
+
     if env.TIME_RELEVANT:
         plot_comparison(out_path="out/comparison_plots/times.png", comparison_values=times, labels=labels,
                         title="Episode length history comparison", ylabel="Time (game ticks)",
@@ -592,50 +713,97 @@ def compare_statistics(model_names, env, labels=None):
         plot_comparison(out_path="out/comparison_plots/log_times.png", comparison_values=times, labels=labels,
                         title="Episode length history comparison", ylabel="Time (game ticks)",
                         window_size=WINDOW_SIZES[1], logarithmic=True)
+        plot_comparison(out_path="out/comparison_plots/time_records.png", comparison_values=time_records,
+                        labels=labels, title="Time records comparison", ylabel="Time (game ticks)")
+
     if env.WINS_RELEVANT:
         plot_comparison(out_path="out/comparison_plots/wins.png", comparison_values=wins, labels=labels,
                         title="Win-Ratio", ylabel="Win proportion", window_size=WINDOW_SIZES[1])
+
     plot_comparison(out_path="out/comparison_plots/losses.png", comparison_values=losses, labels=labels,
                     title="Training loss history comparison", ylabel="Loss", xlabel="Train cycle", logarithmic=True,
                     window_size=WINDOW_SIZES_LOSS[1])
 
+    plot_comparison(out_path="out/comparison_plots/learning_rates.png", comparison_values=learning_rates, labels=labels,
+                    title="Learning rates comparison", ylabel="Learning rate", xlabel="Train cycle")
 
-def plot_comparison(out_path, comparison_values, labels, title, ylabel, window_size, xlabel="Episode",
+
+def plot_comparison(out_path, comparison_values, labels, title, ylabel, window_size=None, xlabel="Episode",
                     logarithmic=False):
-    for values, label in zip(comparison_values, labels):
-        add_moving_avg_plot(values, window_size, label=label)
+    if window_size is not None:
+        for values, label in zip(comparison_values, labels):
+            add_moving_avg_plot(values, window_size, label=label)
+    else:
+        for values, label in zip(comparison_values, labels):
+            plt.plot(values, label=label)
 
     plot(title, xlabel, ylabel, out_path, True, logarithmic)
 
 
 def check_for_existing_model(path):
     if os.path.exists(path):
-        ans = input("There is already a model saved at '%s'. You can either override (delete) the existing\n"
-                    "model or you can abort the program. Do you want to override the model? (y/n)\n" % path)
-        if ans == "y":
+        question = "There is already a model saved at '%s'. You can either override (delete) the existing\n" \
+                   "model or you can abort the program. Do you want to override the model? (y/n)" % path
+        if user_agrees_to(question):
             shutil.rmtree(path)
         else:
-            raise Exception("User aborted program.")
+            print("No files changed. Shutting down program.")
+            quit()
 
 
-def hyperparams_to_json(out_path, num_parallel_envs, use_dueling, use_double, learning_rate, latent_dim,
-                        latent_depth, latent_a_dim, latent_v_dim, obs_buf_size, exp_buf_size):
-    hyperparams_dict = {"num_parallel_envs": num_parallel_envs,
-                        "use_dueling": use_dueling,
-                        "use_double": use_double,
-                        "learning_rate": learning_rate,
-                        "latent_dim": latent_dim,
-                        "latent_depth": latent_depth,
-                        "latent_a_dim": latent_a_dim,
-                        "latent_v_dim": latent_v_dim,
-                        "obs_buf_size": obs_buf_size,
-                        "exp_buf_size": exp_buf_size}
+def config2text(config: dict):
+    text = ""
+    for entry in config.keys():
+        text += ("\n" + entry + ": " + str(config[entry]))
+    return text
+
+
+def hyperparams_to_json(stem_model, q_network, out_path, num_parallel_envs, use_double,
+                        learning_rate, obs_buf_size, exp_buf_size):
+    stem_config = stem_model.get_config()
+    q_config = q_network.get_config()
+    lr_config = learning_rate.get_config()
+    other_config = {"num_parallel_envs": num_parallel_envs,
+                    "use_double": use_double,
+                    "obs_buf_size": obs_buf_size,
+                    "exp_buf_size": exp_buf_size}
+
+    hyperparams = {"stem_model_config": stem_config,
+                   "q_network_config": q_config,
+                   "lr_config": lr_config,
+                   "other_config": other_config}
 
     with open(out_path + "hyperparams.json", 'w') as outfile:
-        json.dump(hyperparams_dict, outfile)
+        json.dump(hyperparams, outfile)
 
 
 def convert_secs_to_hhmmss(s):
     m = s // 60
     h = m // 60
     return "%d:%02d:%02d h" % (h, m % 60, s % 60)
+
+
+def user_agrees_to(question):
+    """Makes a yes/no query to the user. Returns True if user answered yes, False if no, and repeats if
+    the user's question was invalid."""
+    # let window flash in Windows
+    ctypes.windll.user32.FlashWindow(ctypes.windll.kernel32.GetConsoleWindow(), True)
+
+    # ask question to user and handle answer
+    while True:
+        ans = input(question + "\n")
+        if ans == "y":
+            return True
+        elif ans == "n":
+            return False
+        else:
+            print("Invalid answer. Please type 'y' for 'Yes' or type 'n' for 'No.'")
+
+
+# Colors and formatting for console text
+def orange(text):
+    return "\033[33m" + text + "\033[0m"
+
+
+def bold(text):
+    return "\033[1m" + text + "\033[0m"

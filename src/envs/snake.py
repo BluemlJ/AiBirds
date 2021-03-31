@@ -14,6 +14,9 @@ STYLE = {"bg_color": (50, 50, 50),
 
 MAX_TIME_WITHOUT_SCORE = 288  # to avoid infinite loops 288
 
+STD_HEIGHT = 12
+STD_WIDTH = 24
+
 
 class Snake(ParallelEnvironment):
     NAME = "snake"
@@ -21,7 +24,7 @@ class Snake(ParallelEnvironment):
     TIME_RELEVANT = True
     WINS_RELEVANT = False
 
-    def __init__(self, num_par_envs, height=12, width=24):
+    def __init__(self, num_par_envs, height=STD_HEIGHT, width=STD_WIDTH):
         actions = ['MOVE_UPWARDS', 'MOVE_RIGHTWARDS', 'MOVE_DOWNWARDS', 'MOVE_LEFTWARDS']
         super().__init__(num_par_envs, actions)
 
@@ -42,7 +45,7 @@ class Snake(ParallelEnvironment):
         self.fruit_fields = np.zeros(shape=(self.num_par_envs, self.height, self.width), dtype="bool")
 
         # State control
-        self.time_since_last_score = np.zeros(shape=self.num_par_envs, dtype="uint")
+        self.time_since_last_fruit = np.zeros(shape=self.num_par_envs, dtype="uint")
 
         self.screen = None
 
@@ -61,7 +64,7 @@ class Snake(ParallelEnvironment):
 
         self.times[:] = 0
         self.game_overs[:] = False
-        self.time_since_last_score[:] = 0
+        self.time_since_last_fruit[:] = 0
 
         self.__init_env(range(self.num_par_envs))
 
@@ -78,7 +81,7 @@ class Snake(ParallelEnvironment):
 
         self.times[ids] = 0
         self.game_overs[ids] = False
-        self.time_since_last_score[ids] = 0
+        self.time_since_last_fruit[ids] = 0
 
         self.__init_env(ids)
 
@@ -106,7 +109,7 @@ class Snake(ParallelEnvironment):
     def step(self, actions):
         rewards = np.zeros(self.num_par_envs)
 
-        self.change_snake_movement_orientation(actions)
+        self.update_snake_movement_orientation(actions)
 
         fruit_found = self.snake_creep()
 
@@ -116,21 +119,21 @@ class Snake(ParallelEnvironment):
 
         self.times[~ self.game_overs] += 1
 
-        self.time_since_last_score += 1
+        self.time_since_last_fruit += 1
 
         rewards[fruit_found] = 1  # - self.time_since_last_score / MAX_TIME_WITHOUT_SCORE
         # Encourage faster fruit gathering: doesn't work
         # rewards[:] -= 0.005  # rotten fruit
 
-        self.time_since_last_score[fruit_found] = 0
-        starved = self.time_since_last_score >= MAX_TIME_WITHOUT_SCORE
+        self.time_since_last_fruit[fruit_found] = 0
+        starved = self.time_since_last_fruit >= MAX_TIME_WITHOUT_SCORE
         self.game_overs[starved] = True
 
         rewards[self.game_overs] -= 1
 
         return rewards, self.snake_bodies.get_lengths(), self.game_overs, self.times, self.wins
 
-    def change_snake_movement_orientation(self, actions):
+    def update_snake_movement_orientation(self, actions):
         action_valid = (self.snake_movement_orientations - actions) % 2 != 0
         self.snake_movement_orientations[action_valid] = actions[action_valid]
 
@@ -193,7 +196,7 @@ class Snake(ParallelEnvironment):
         fields = np.stack((self.snake_head_fields, self.snake_body_fields, self.fruit_fields), axis=3)
         one_hot_orientations = np.zeros((self.num_par_envs, 4), dtype="bool")
         one_hot_orientations[range(self.num_par_envs), self.snake_movement_orientations] = True
-        numeric_state = np.concatenate((one_hot_orientations, np.expand_dims(self.time_since_last_score, axis=1)),
+        numeric_state = np.concatenate((one_hot_orientations, np.expand_dims(self.time_since_last_fruit, axis=1)),
                                        axis=1)
         return fields, numeric_state
 
@@ -263,7 +266,7 @@ class Snake(ParallelEnvironment):
 
         # Timer text
         font = pygame.font.SysFont('Consolas', 20)
-        text = font.render(str(MAX_TIME_WITHOUT_SCORE - self.time_since_last_score[0]),
+        text = font.render(str(MAX_TIME_WITHOUT_SCORE - self.time_since_last_fruit[0]),
                            True, STYLE["font_color"], None)
         rect = text.get_rect()
         rect.bottomright = (self.screen.get_width() - scr_marg_left - 200, scr_marg_top - 30)

@@ -40,8 +40,6 @@ class Tetris(ParallelEnvironment):
     TIME_RELEVANT = True
     WINS_RELEVANT = False
 
-
-
     def __init__(self, num_par_envs=256, height=20, width=10, style_name="minimal"):
         actions = ['IDLE', 'MOVE_LEFT', 'MOVE_RIGHT', 'ROT_RIGHT']
         super().__init__(num_par_envs, actions)
