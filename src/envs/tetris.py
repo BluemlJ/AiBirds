@@ -213,10 +213,10 @@ class Tetris(ParallelEnvironment):
         Empty fields are represented by False, all others by True."""
 
         states = np.stack((self.fields, self.fb_fields), axis=3)
-        return states, []
+        return states, self.num_par_envs * [[]]
 
     def get_state_shapes(self):
-        image_state_shape = [self.height, self.width, 2]
+        image_state_shape = (self.height, self.width, 2)
         numerical_state_shape = 0
         return image_state_shape, numerical_state_shape
 

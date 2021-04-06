@@ -1,13 +1,13 @@
-from src.agents.models.generic import ResNetBlock
-import keras
-from keras.layers import Input, Flatten, Dense, ReLU, Convolution2D, MaxPool2D, Concatenate, BatchNormalization, \
+from src.agents.comp.generic import ResNetBlock
+from src.agents.comp.stem import StemModel
+from tensorflow.keras.layers import Input, Flatten, Dense, ReLU, Convolution2D, Concatenate, BatchNormalization, \
     GlobalAvgPool2D
-from keras.initializers import GlorotNormal
+from tensorflow.keras.initializers import GlorotNormal
 
 
-class ResNet(keras.Model):
+class ResNet(StemModel):
     def __init__(self, latent_dim, latent_depth):
-        super().__init__()
+        super().__init__(sequential=False)
         self.latent_dim = latent_dim
         self.latent_depth = latent_depth
 
@@ -15,7 +15,7 @@ class ResNet(keras.Model):
         input_shape_2d, input_shape_1d = input_shape
 
         enc_num_dim = 16
-        num_channels = 64
+        num_channels = 32
 
         input_2d = Input(shape=input_shape_2d, name="input_2d")
         input_1d = Input(shape=input_shape_1d, name="input_1d")
@@ -25,11 +25,11 @@ class ResNet(keras.Model):
         norm = BatchNormalization(name="norm_in")(conv)
         relu = ReLU(name="relu_in")(norm)
 
-        res = ResNetBlock([32, 64, 128, 256], 4, name="block1", first_block=True)(relu)
-        # res = ResNetBlock(256, 2, name="block2")(res)
-        # res = ResNetBlock(256, 2, name="block3")(res)
+        res = ResNetBlock(32, 1, name="block1", first_block=True)(relu)
+        res = ResNetBlock(64, 1, name="block2")(res)
+        res = ResNetBlock(128, 1, name="block3")(res)
 
-        avg = GlobalAvgPool2D()(res)
+        avg = GlobalAvgPool2D(name="ResNet_out")(res)
 
         flat = Flatten(name='latent')(avg)
 

@@ -1,21 +1,31 @@
-from abc import ABCMeta
-
-import keras
 import tensorflow as tf
-from keras.layers import Dense, LeakyReLU
+from abc import ABCMeta
+from tensorflow import keras
+from tensorflow.keras.layers import Dense, LeakyReLU
 
 
 class QNetwork(keras.Model, metaclass=ABCMeta):
     def __init__(self, **kwargs):
         super(QNetwork, self).__init__(**kwargs)
         self.num_actions = None
+        self.sequential = None
+        self.q_value_axis = None
 
     def set_num_actions(self, num_actions):
         self.num_actions = num_actions
 
+    def set_sequential(self, sequential):
+        self.sequential = sequential
+        if sequential:
+            self.q_value_axis = 2
+        else:
+            self.q_value_axis = 1
+
     def check_initialization(self):
         if self.num_actions is None:
             raise ValueError("You must specify number of actions first before building the Q-network.")
+        elif self.sequential is None:
+            raise ValueError("You must set (non-)sequential before building the Q-network.")
 
 
 class DoubleQNetwork(QNetwork):
@@ -43,15 +53,14 @@ class DoubleQNetwork(QNetwork):
     def call(self, inputs, training=None, mask=None):
         v = self.state_value(self.latent_v(inputs))
         a = self.advantage(self.latent_a(inputs))
-        a_avg = tf.reduce_mean(a, axis=1, keepdims=True, name='A_mean')
+        a_avg = tf.reduce_mean(a, axis=self.q_value_axis, keepdims=True, name='A_mean')
         # State-action values: Q(s, a) = V(s) + A(s, a) - A_mean(s, a)
         return v + a - a_avg
 
 
 class VanillaQNetwork(QNetwork):
-    def __init__(self, num_actions):
+    def __init__(self):
         super().__init__(name="default_Q_network")
-        self.num_actions = num_actions
 
     def build(self, input_shape=None):
         self.check_initialization()

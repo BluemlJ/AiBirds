@@ -1,16 +1,14 @@
-import keras
-from keras.layers import Input, Flatten, Dense, ReLU, Convolution2D, MaxPool2D
-from keras.initializers import GlorotNormal
+from src.agents.comp.stem import StemModel
+from tensorflow.keras.layers import Input, Flatten, Dense, ReLU, Convolution2D, MaxPool2D
+from tensorflow.keras.initializers import GlorotNormal
 
 
-class ClassicConv(keras.Model):
+class ClassicConv(StemModel):
     def __init__(self, latent_dim):
-        super().__init__()
+        super().__init__(sequential=False)
         self.latent_dim = latent_dim
 
     def build(self, input_shape):
-        super().__init__()
-
         input_frame = Input(shape=input_shape)
 
         conv1 = Convolution2D(32, (4, 4), strides=1, padding='same', kernel_initializer=GlorotNormal,

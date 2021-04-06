@@ -485,7 +485,7 @@ class ChainBomb(ParallelEnvironment, ChainBombBase):
         return np.copy(self.fields), inventory_one_hot.reshape((self.num_par_envs, -1))
 
     def get_state_shapes(self):
-        image_state_shape = [self.height, self.width, 8]
+        image_state_shape = (self.height, self.width, 8)
         numerical_state_shape = 5 * 6
         return image_state_shape, numerical_state_shape
 

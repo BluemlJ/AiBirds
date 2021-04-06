@@ -237,10 +237,10 @@ class AngryBirds(ParallelEnvironment):
         # Convert into unsigned byte
         state = np.expand_dims(scaled.astype(np.uint8), axis=0)
 
-        return state, []
+        return state, self.num_par_envs * [[]]
 
     def get_state_shapes(self):
-        image_state_shape = [STATE_PIXEL_RES, STATE_PIXEL_RES, 3]
+        image_state_shape = (STATE_PIXEL_RES, STATE_PIXEL_RES, 3)
         numerical_state_shape = 0
         return image_state_shape, numerical_state_shape
 
