@@ -120,16 +120,23 @@ def yellow(text):
     return "\033[93m" + text + "\033[0m"
 
 
+def red(text):
+    return "\033[91m" + text + "\033[0m"
+
+
 def bold(text):
     return "\033[1m" + text + "\033[0m"
 
 
 def del_first(lst, n):
     """Deletes in-place the first n elements from list and fills it with zeros."""
+    if n == 0:
+        return
+
     m = len(lst) - n
     assert m >= 0
     lst[:m] = lst[n:]
-    lst[-n:] = 0
+    lst[m:] = 0
 
 
 def num2text(num):
@@ -155,3 +162,15 @@ def pad_data_with_zero_instances(data, pad_len):
 def copy_model(model):
     model_class = type(model)
     return model_class(**model.get_config())
+
+
+def print_info(text):
+    print(yellow(text))
+
+
+def print_warning(text):
+    print(orange(text))
+
+
+def print_error(text):
+    print(red(text))

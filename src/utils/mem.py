@@ -1,5 +1,5 @@
 import numpy as np
-from src.utils.utils import del_first
+from src.utils.utils import del_first, print_error
 
 
 class ReplayMemory:
@@ -254,9 +254,9 @@ class ReplayMemory:
         return seq_prios
 
     def reset_priorities(self):
-        self.priorities = np.ones((self.get_length(),), dtype='float32')
+        self.priorities[:] = 1
         if self.sequential:
-            self.sequence_priorities[:] = 0
+            self.sequence_priorities[:] = 1
 
     def print_trans_from(self, trans_ids, env):
         for idx in trans_ids:
@@ -290,8 +290,9 @@ class ReplayMemory:
 
         if self.sequential:
             del_first(self.hidden_states, n)
-            k = np.argmax(self.sequences[:, 0] > n)
+            k = np.argmax(self.sequences[:, 0] >= n)
             del_first(self.sequences, k)
+            self.sequences[:, 0] -= n
             del_first(self.sequence_priorities, k)
             self.seq_ptr -= k
 
@@ -311,6 +312,11 @@ def choice_by_priority(num_instances, priorities, alpha):
     adjusted_priorities = np.power(priorities, alpha)
 
     # Convert priorities into probabilities
+    total_prio = np.sum(adjusted_priorities)
+    if total_prio == 0:  # Catch
+        print_error("Error: All given priorities are zero! Since this is practically impossible, "
+                    "something might be wrong.\nThis is no critical error, hence, training continues.")
+        return [], []
     probabilities = adjusted_priorities / np.sum(adjusted_priorities)
 
     # Handle cases with less non-zero probabilities than sample_size
