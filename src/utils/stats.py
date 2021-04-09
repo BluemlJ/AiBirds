@@ -390,7 +390,7 @@ class Statistics:
         if len(final_scores) > 0:
             plot_moving_average(final_scores,
                                 title="Score history",
-                                ylabel="Score",
+                                y_label="Score",
                                 window_sizes=self.WINDOW_SIZES_EPISODES,
                                 output_path=out_path + "scores.png",
                                 show=True)
@@ -405,7 +405,7 @@ class Statistics:
         if len(final_returns) > 0:
             plot_moving_average(final_returns,
                                 title="Return history",
-                                ylabel="Return",
+                                y_label="Return",
                                 window_sizes=self.WINDOW_SIZES_EPISODES,
                                 output_path=out_path + "returns.png")
             plt.plot(self.get_return_records())
@@ -418,7 +418,7 @@ class Statistics:
         if self.env_type.TIME_RELEVANT:
             plot_moving_average(self.get_times(),
                                 title="Episode length history",
-                                ylabel="Time",
+                                y_label="Time",
                                 window_sizes=self.WINDOW_SIZES_EPISODES,
                                 output_path=out_path + "times.png")
             plt.plot(self.get_time_records())
@@ -430,7 +430,7 @@ class Statistics:
     def plot_wins(self, out_path):
         plot_moving_average(self.get_wins(),
                             title="Win-Raio",
-                            ylabel="Win proportion",
+                            y_label="Win proportion",
                             window_sizes=self.WINDOW_SIZES_EPISODES,
                             output_path=out_path + "wins.png")
 
@@ -449,7 +449,7 @@ class Statistics:
             plot_moving_average(self.get_losses(),
                                 title="Training loss history",
                                 window_sizes=self.WINDOW_SIZES_CYCLES,
-                                ylabel="Loss", xlabel="Train cycle",
+                                y_label="Loss", x_label="Train cycle",
                                 output_path=out_path + "loss.png",
                                 logarithmic=True)
 
@@ -497,16 +497,16 @@ def get_moving_avg_lst(values, n):
     return mov_avg
 
 
-def plot_moving_average(values, title, ylabel, output_path, window_sizes, xlabel="Episode",
+def plot_moving_average(values, title, y_label, output_path, window_sizes, x_label="Episode",
                         logarithmic=False, validation_values=None, validation_period=None, show=False):
-    add_moving_avg_plot(values, window_sizes[0], 'silver')
-    add_moving_avg_plot(values, window_sizes[1], 'black')
-    add_moving_avg_plot(values, window_sizes[2], '#009d81')
+    add_moving_avg_plot(values, window_sizes[0], color='silver')
+    add_moving_avg_plot(values, window_sizes[1], color='black')
+    add_moving_avg_plot(values, window_sizes[2], color='#009d81')
 
     if validation_values is not None and validation_period is not None:
         add_validation_plot(validation_values, validation_period)
 
-    plot(title, xlabel, ylabel, output_path, True, logarithmic, show)
+    plot(title, x_label, y_label, output_path, True, logarithmic, show)
 
 
 def add_moving_avg_plot(y_values, window_size, x_values=None, color=None, label=None):
