@@ -9,7 +9,7 @@ from src.agents.comp.stem import StemModel
 class ConvHead(Model):
     def __init__(self):
         super().__init__()
-        self.conv1 = Convolution2D(64, (4, 4), strides=1, padding='same', kernel_initializer=GlorotNormal,
+        self.conv1 = Convolution2D(32, (4, 4), strides=1, padding='same', kernel_initializer=GlorotNormal,
                                    use_bias=False, activation="relu")
         self.conv2 = Convolution2D(128, (2, 2), strides=1, padding='same', kernel_initializer=GlorotNormal,
                                    use_bias=False, activation="relu")
@@ -65,10 +65,10 @@ class ConvLSTM(StemModel):
         assert sequence_len >= 2
         self.latent_dim = latent_dim
         self.lstm_dim = lstm_dim
-        self.latent = Dense(self.latent_dim, activation="relu")
 
         self.conv_head = TimeConvHead()
         self.lstm = LSTM(self.lstm_dim, stateful=True, return_sequences=True, name="lstm")
+        self.latent = Dense(self.latent_dim, activation="relu")
         self.hidden = self.lstm
 
     def call(self, inputs, training=None, mask=None):

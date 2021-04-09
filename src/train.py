@@ -9,7 +9,7 @@ target_sync_period = 128
 actor_sync_period = replay_period
 replay_size_multiplier = 4  # multiplier of 4 means that, per replay on average, 25 % of data is unseen.
 replay_batch_size = 1024
-replay_epochs = 4
+replay_epochs = 1
 
 # Model with recurrence
 sequence_len = 20
@@ -17,7 +17,7 @@ sequence_len = 20
 # Stem model
 latent_dim = 128
 latent_depth = 1  # number of latent (dense) layers (if supported)
-stem_model = comp.generic.ConvLSTM(latent_dim=latent_dim, lstm_dim=latent_dim, sequence_len=sequence_len)
+stem_model = comp.generic.ConvStem(latent_dim=latent_dim)  # , lstm_dim=latent_dim, sequence_len=sequence_len)
 
 # Q network
 latent_v_dim = 64  # dimension of value part of q-network
@@ -25,9 +25,9 @@ latent_a_dim = 64  # dimension of advantage part of q-network
 q_network = comp.q_network.DoubleQNetwork(latent_v_dim, latent_a_dim)
 
 # Learning rate
-learning_rate = LearningRate(initial_learning_rate=0.0001,  # lr <= 0.0001 recommended
+learning_rate = LearningRate(initial_learning_rate=0.0004,  # lr <= 0.0001 recommended
                              warmup_episodes=0,  # number of episodes for linear LR warm-up (0 for no warm-up)
-                             half_life_period=None)  # determines decay, None for no decay
+                             half_life_period=30000)  # determines decay, None for no decay
 
 # Epsilon
 epsilon = Epsilon(init_value=1,
@@ -39,22 +39,22 @@ epsilon = Epsilon(init_value=1,
 obs_buf_size = 2000  # number of transitions that can fit into the observations buffer per env, = max episode length +1
 exp_buf_size = 4000000  # total number of transitions that can fit into the agent's replay memory
 
-# load_and_play("debug", Snake)
+# load_and_play("frank", Snake, checkpoint_no=42842)
 
 agent = Agent(env_type=Snake,
               stem_model=stem_model,
               q_network=q_network,
-              name="debug_2",
+              name="double_lr_reloaded",
               num_parallel_envs=num_parallel_envs,  # look table for optimal value
               replay_batch_size=replay_batch_size,
               sequence_shift=10,
               use_double=True,
               obs_buf_size=obs_buf_size,
               mem_size=exp_buf_size,
-              use_pretrained=False,
-              override=True)
+              use_pretrained=False)
+# agent.restore("lstm")
 
-agent.practice(num_parallel_steps=2000000,
+agent.practice(num_parallel_steps=200000,
                replay_period=replay_period,
                replay_size_multiplier=replay_size_multiplier,
                replay_epochs=replay_epochs,

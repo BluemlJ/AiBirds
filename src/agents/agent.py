@@ -5,7 +5,7 @@ os.environ['TF_CPP_MIN_LOG_LEVEL'] = "2"  # let TF only print errors
 import tensorflow as tf
 import numpy as np
 
-from src.utils import ReplayMemory, Statistics, Logger, Epsilon, LearningRate, Observations, \
+from src.utils import ReplayMemory, Statistics, Epsilon, LearningRate, Observations, \
     copy_model, plot_highscores, config2text, check_for_existing_model, config2json, json2config
 from src.agents.comp import *
 
@@ -18,7 +18,6 @@ tf.config.experimental.set_virtual_device_configuration(gpus[0], memory_config)
 # Miscellaneous
 PLOT_PERIOD = 5000  # number of transitions between each learning statistics plot
 PRINT_STATS_PERIOD = 100
-MA_WINDOW_SIZE = 10000
 CHECKPOINT_SAVE_PERIOD = 5000
 TEST_PERIOD = 2000
 
@@ -27,7 +26,8 @@ class Agent:
     """Deep Q-Network (DQN) agent for playing Tetris, Snake or other games"""
 
     def __init__(self, env_type, stem_model: StemModel, q_network: QNetwork,
-                 name, num_parallel_envs, replay_batch_size, sequence_shift=None, use_double=True,
+                 name, num_parallel_envs, replay_batch_size, sequence_shift=None, eta=0.9,
+                 use_double=True,
                  obs_buf_size=100, mem_size=10000,
                  use_pretrained=False, override=False, **kwargs):
         """Constructor
@@ -80,14 +80,15 @@ class Agent:
 
         # Buffers, memory, and statistics
         self.obs_buf_size = obs_buf_size
-        self.stats = Statistics(env_type)  # Information collected over the course of training
         self.mem_size = mem_size
         self.memory = ReplayMemory(memory_size=self.mem_size,
                                    state_shape_2d=self.state_shape_2d,
                                    state_shape_1d=self.state_shape_1d,
                                    hidden_state_shape=self.stem_model.get_hidden_state_shape(),
                                    sequence_len=self.sequence_len,
-                                   sequence_shift=sequence_shift)
+                                   sequence_shift=sequence_shift,
+                                   eta=eta)
+        self.stats = Statistics(self.env_type, self.env, self.memory, log_path=self.out_path)
 
         self.save_config()
         print('DQN agent initialized.')
@@ -154,7 +155,7 @@ class Agent:
         """The agent's main training routine.
 
         :param num_parallel_steps: Number of (parallel) transitions to play
-        :param replay_period: Number of levels between each training of the online network
+        :param replay_period: Number of parallel steps between each training of the online network
         :param replay_size_multiplier: Factor determining the number of transitions to be learned from each
                    train cycle (the replay size). Each time, the replay size is determined as
                    follows: replay_size = replay_size_multiplier * new_transitions
@@ -180,8 +181,6 @@ class Agent:
         self.write_hyperparams_file(num_parallel_steps, replay_period, replay_size_multiplier, target_sync_period,
                                     alpha, gamma, delta, delta_anneal)
 
-        logger = Logger(self.out_path)
-
         # Initialize observations buffer with fixed size
         obs = Observations(self.obs_buf_size, self.num_par_envs,
                            self.state_shape_2d, self.state_shape_1d,
@@ -194,8 +193,7 @@ class Agent:
 
         print("DQN agent starts practicing...")
 
-        total_timer = time.time()
-        comp_timer = total_timer
+        self.stats.start_timer()
 
         for i in range(1, num_parallel_steps + 1):
             states = self.get_states()
@@ -223,11 +221,7 @@ class Agent:
                                          gamma)
 
                     obs_score, obs_return = obs.get_performance(env_id)
-                    new_return_record = self.stats.denote_stats(obs_return, obs_score, obs_times[-1], wins[env_id])
-
-                    if new_return_record:
-                        transition = self.memory.get_trans_text(self.memory.get_length() - 1, self.env)
-                        logger.log_new_record(obs_return, transition)
+                    self.stats.denote_episode_stats(obs_return, obs_score, obs_times[-1], wins[env_id])
 
                     new_transitions += len(obs_rewards)
 
@@ -240,7 +234,7 @@ class Agent:
 
             # Every X episodes, plot informative graphs
             if i % PLOT_PERIOD == 0:
-                self.stats.plot_stats(self.out_path, self.memory)
+                self.stats.plot_stats(self.out_path)
 
             # If environment has test levels, test on it
             if i % TEST_PERIOD == 0 and self.env.has_test_levels():
@@ -249,13 +243,13 @@ class Agent:
             # Update the network weights every train_period levels to fit experience
             if i % replay_period == 0:  # and self.memory.get_length() >= replay_size:
                 replay_size = replay_size_multiplier * new_transitions
-                learned_trans = self.learn(replay_size, gamma, delta, logger, epochs=replay_epochs,
+                learned_trans = self.learn(replay_size, gamma, delta, epochs=replay_epochs,
                                            alpha=alpha, verbose=verbose)
                 new_transitions = max(0, new_transitions - learned_trans)
 
             # Save model checkpoint
             if i % CHECKPOINT_SAVE_PERIOD == 0:
-                self.save(overwrite=True, checkpoint=True, checkpoint_no=self.stats.get_length())
+                self.save(overwrite=True, checkpoint=True, checkpoint_no=self.stats.get_num_episodes())
 
             # Cut off old experience to reduce buffer load
             if self.memory.get_length() > 0.95 * self.mem_size:
@@ -270,28 +264,25 @@ class Agent:
                 self.actor.set_weights(self.online_learner.get_weights())
 
             if i % PRINT_STATS_PERIOD == 0:
-                self.stats.print_stats(i, num_parallel_steps, self.num_par_envs, time.time() - comp_timer,
-                                       time.time() - total_timer, PRINT_STATS_PERIOD, epsilon, logger,
-                                       MA_WINDOW_SIZE)
-                comp_timer = time.time()
+                self.stats.print_stats(i, num_parallel_steps, self.num_par_envs,
+                                       PRINT_STATS_PERIOD, epsilon)
 
             # Cool down
             epsilon.decay()  # reduces randomness (less explore, more exploit)
             delta *= delta_anneal  # shifts target return fom MC to one-step
 
         self.save()
-        logger.close()
+        self.stats.logger.close()
 
         print("Practicing finished successfully!")
 
-    def learn(self, replay_size, gamma, delta, logger, epochs=1, alpha=0.7, verbose=False):
+    def learn(self, replay_size, gamma, delta, epochs=1, alpha=0.7, verbose=False):
         """Updates the online network's weights. This is the actual learning procedure of the agent.
 
         :param replay_size: Number of transitions to be learned from
         :param gamma: Discount factor
         :param delta: Trade-off factor between Monte Carlo target return and one-step target return,
                       delta = 1 means MC return, delta = 0 means one-step return
-        :param logger:
         :param epochs:
         :param alpha: For Prioritized Experience Replay: the larger alpha the stronger prioritization
         :param verbose:
@@ -303,17 +294,16 @@ class Agent:
 
         if not self.sequential:
             return self.learn_instances(replay_size, gamma=gamma, delta=delta, alpha=alpha,
-                                        epochs=epochs, logger=logger, verbose=verbose)
+                                        epochs=epochs, verbose=verbose)
         else:
             num_sequences = replay_size // self.sequence_len
             if num_sequences >= self.replay_batch_size:
                 return self.learn_sequences(num_sequences, gamma=gamma, alpha=alpha,
-                                            epochs=epochs, logger=logger, verbose=verbose)
+                                            epochs=epochs, verbose=verbose)
             else:
                 return 0
 
-    def learn_instances(self, num_instances, gamma, delta, logger, epochs=1,
-                        alpha=0.7, verbose=False):
+    def learn_instances(self, num_instances, gamma, delta, epochs=1, alpha=0.7, verbose=False):
         """Uses batches of single instances to learn on."""
 
         # Obtain a list of useful transitions to learn on
@@ -361,12 +351,11 @@ class Agent:
                                                         sample_weights=sample_weights)
 
         self.stats.denote_learning_stats(loss, individual_losses, self.optimizer.learning_rate.numpy(),
-                                         trans_ids, predictions, targets, self.memory, self.env, logger)
+                                         trans_ids, predictions, targets, self.env)
 
         return len(trans_ids)
 
-    def learn_sequences(self, num_sequences, gamma, logger, epochs=1,
-                        alpha=0.7, verbose=False):
+    def learn_sequences(self, num_sequences, gamma, epochs=1, alpha=0.7, verbose=False):
         """Uses batches of sequences to learn on."""
 
         # Obtain a list of useful sequences to learn on
@@ -395,12 +384,15 @@ class Agent:
         target_returns = np.zeros(shape=(len(seq_ids), self.sequence_len))
         target_returns[:, -1] = rewards[:, -1] + gamma * pred_last_returns
         target_returns[:, -1][terminals[:, -1]] = rewards[:, -1][terminals[:, -1]]
+        target_returns[:, -1][~ mask[:, -1]] = 0
         for time_step in reversed(range(self.sequence_len - 1)):
             target_returns[:, time_step] = rewards[:, time_step] + gamma * target_returns[:, time_step + 1]
             target_returns[:, time_step][terminals[:, time_step]] = rewards[:, time_step][terminals[:, time_step]]
+            target_returns[:, time_step][~ mask[:, time_step]] = 0
 
         # Temporal difference (TD) error
         td_errs = target_returns - pred_returns
+        assert not np.any(np.isnan(td_errs))
 
         # Update transition priorities according to TD errors
         self.memory.set_priorities(trans_ids, np.abs(td_errs))
@@ -426,7 +418,7 @@ class Agent:
                                                         mask=mask)
 
         self.stats.denote_learning_stats(loss, individual_losses, self.optimizer.learning_rate.numpy(),
-                                         trans_ids, predictions, targets, self.memory, self.env, logger)
+                                         trans_ids, predictions, targets, self.env)
 
         return np.prod(trans_ids.shape)
 
@@ -459,9 +451,10 @@ class Agent:
                     self.online_learner.stem_model.set_cell_states(hidden_states_b)
                 batch_individual_losses, batch_out = self.train_step(x_2d_b, x_1d_b, y_b, sample_weight_b, mask_b)
 
-                at_instance = step * batch_size
-                predictions[at_instance:at_instance + len(y_b)] = batch_out
-                individual_losses[at_instance:at_instance + len(y_b)] += batch_individual_losses
+                if epoch == epochs - 1:
+                    at_instance = step * batch_size
+                    predictions[at_instance:at_instance + len(y_b)] = batch_out
+                    individual_losses[at_instance:at_instance + len(y_b)] = batch_individual_losses
 
                 train_loss = self.training_loss_metric.result().numpy()
 
@@ -477,7 +470,7 @@ class Agent:
         if verbose:
             print("Fitting took %.2f s." % (time.time() - start))
 
-        individual_losses /= epochs
+        # individual_losses /= epochs
 
         return train_loss, individual_losses, predictions
 
@@ -485,19 +478,25 @@ class Agent:
     def train_step(self, x_2d, x_1d, y, sample_weight, mask_b):
         with tf.GradientTape() as tape:
             out = self.online_learner([x_2d, x_1d], training=True)
-            individual_losses = self.training_loss_fn(y, out, sample_weight=sample_weight)
+            weighted_losses = self.training_loss_fn(y, out, sample_weight=sample_weight)
             if self.sequential:
-                individual_losses = tf.multiply(individual_losses, tf.cast(mask_b, tf.float32))
-            cumulated_loss = tf.reduce_mean(individual_losses)
+                mask = tf.cast(mask_b, tf.float32)
+                weighted_losses = tf.multiply(weighted_losses, mask)
+            cumulated_loss = tf.reduce_mean(weighted_losses)
 
         grads = tape.gradient(cumulated_loss, self.online_learner.trainable_weights)
+
+        # Compute unweighted losses
+        losses = self.training_loss_fn(y, out)
+        if self.sequential:
+            losses = tf.multiply(losses, mask)
 
         # Run one step of gradient descent by the optimizer
         self.optimizer.apply_gradients(zip(grads, self.online_learner.trainable_weights))
 
         self.training_loss_metric.update_state(y, out)
 
-        return individual_losses, out
+        return losses, out
 
     def plan(self, states, epsilon):
         """Epsilon greedy policy. With a probability of epsilon, a random action is returned. Else,
@@ -657,7 +656,8 @@ class Agent:
                         "sequence_shift": self.memory.sequence_shift,
                         "use_double": self.double,
                         "obs_buf_size": self.obs_buf_size,
-                        "mem_size": self.mem_size}
+                        "mem_size": self.mem_size,
+                        "eta": self.memory.eta}
 
         config = {"stem_model_class": self.stem_model.__class__.__name__,
                   "stem_model_config": stem_config,
@@ -717,6 +717,7 @@ class Agent:
         print("Restoring model from '%s'." % model_path)
         self.online_learner.load_weights(model_path)
         self.target_learner = self.init_target_learner()
+        self.actor = self.init_actor()
         self.stats.load(in_path=stats_path)
 
     def save_experience(self, experience_path=None, overwrite=False, compress=False):
@@ -743,6 +744,7 @@ class Agent:
                "\nsync_period: %d" % (sync_period if self.double else -1) + \
                "\n\nalpha: %f" % alpha + \
                "\ngamma: %f" % gamma + \
+               "\neta: %f" % self.memory.eta + \
                "\ndelta: %f" % delta + \
                "\ndelta_anneal: %f" % delta_anneal + \
                "\nobs_buf_size: %d" % self.obs_buf_size + \

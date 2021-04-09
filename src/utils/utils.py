@@ -3,21 +3,23 @@ import matplotlib.pyplot as plt
 import os
 import shutil
 import json
+import pickle
 import ctypes  # for flashing window in taskbar under Windows
 
 
-def plot(title, xlabel, ylabel, output_path, legend=False, logarithmic=False, show=False):
+def plot(title, x_label, y_label, out_path, legend=False, logarithmic=False, show=False, keep=False):
     plt.title(title)
-    plt.xlabel(xlabel)
-    plt.ylabel(ylabel)
+    plt.xlabel(x_label)
+    plt.ylabel(y_label)
     if logarithmic:
         plt.yscale("log")
     if legend:
         plt.legend()
-    plt.savefig(output_path, dpi=400)
+    plt.savefig(out_path, dpi=400)
     if show:
+        assert not keep
         plt.show()
-    else:
+    elif not keep:
         plt.close()
 
 
@@ -50,7 +52,7 @@ def plot_highscores(highscores_ai, highscores_human, output_path=None):
     plt.show()
 
 
-def angle_to_vector(alpha):
+def angle2vector(alpha):
     rad_shot_angle = np.deg2rad(alpha)
 
     dx = - np.sin(rad_shot_angle) * 80
@@ -78,8 +80,15 @@ def config2text(config: dict):
 
 
 def config2json(config, out_path):
-    with open(out_path, 'w') as outfile:
-        json.dump(config, outfile)
+    """Allows only JSON-serializable data, e.g., native python objects."""
+    with open(out_path, 'w') as json_file:
+        json.dump(config, json_file)
+
+
+def data2pickle(data, out_path):
+    """Allows any type of data."""
+    with open(out_path, 'wb') as pickle_file:
+        pickle.dump(data, pickle_file, protocol=pickle.HIGHEST_PROTOCOL)
 
 
 def json2config(in_path):
@@ -88,10 +97,25 @@ def json2config(in_path):
     return config
 
 
-def convert_secs_to_hhmmss(s):
+def pickle2data(in_path):
+    try:
+        with open(in_path, 'rb') as pickle_file:
+            data = pickle.load(pickle_file)
+            return data
+    except Exception as e:
+        print(red("Unable to unpickle data from '%s'!" % in_path))
+        print(e)
+    return None
+
+
+def sec2hhmmss(s):
     m = s // 60
     h = m // 60
     return "%d:%02d:%02d h" % (h, m % 60, s % 60)
+
+
+def sec2hrs(s):
+    return s / 3600
 
 
 def user_agrees_to(question):
