@@ -84,12 +84,12 @@ class AngryBirds(ParallelEnvironment):
     TIME_RELEVANT = False
     WINS_RELEVANT = True
 
-    def __init__(self, num_par_envs):
-        if num_par_envs > 1:
+    def __init__(self, num_par_inst):
+        if num_par_inst > 1:
             raise ValueError("ERROR: Yet, only one Angry Birds environment is allowed at the same time. "
-                             "You tried to initialize %d parallel environments." % num_par_envs)
+                             "You tried to initialize %d parallel environments." % num_par_inst)
 
-        super().__init__(num_par_envs, ACTIONS)
+        super().__init__(num_par_inst, ACTIONS)
 
         self.id = None
         self.comm_interface = None
@@ -237,12 +237,12 @@ class AngryBirds(ParallelEnvironment):
         # Convert into unsigned byte
         state = np.expand_dims(scaled.astype(np.uint8), axis=0)
 
-        return state, self.num_par_envs * [[]]
+        return state, self.num_par_inst * [[]]
 
     def get_state_shapes(self):
         image_state_shape = (STATE_PIXEL_RES, STATE_PIXEL_RES, 3)
         numerical_state_shape = 0
-        return image_state_shape, numerical_state_shape
+        return [image_state_shape, numerical_state_shape]
 
     def get_number_of_actions(self):
         return len(self.actions)

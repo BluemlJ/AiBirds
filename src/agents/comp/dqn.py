@@ -3,36 +3,46 @@ import numpy as np
 from tensorflow.keras import Model
 from tensorflow.keras.layers import Input
 from tensorflow.python.keras.utils import layer_utils
-from src.agents.comp.stem import StemModel
+from src.agents.comp.stem import StemNetwork
 from src.agents.comp.q_network import QNetwork
 
 
 class DQN(Model):
-    def __init__(self, stem_model: StemModel, q_network: QNetwork,
+    def __init__(self, stem_model: StemNetwork, q_network: QNetwork,
                  input_shape, num_actions, batch_size=None):
         super(DQN, self).__init__()
         self.stem_model = stem_model
         self.q_network = q_network
         self.sequential = stem_model.sequential
         self.num_actions = num_actions
-        self.batch_size = batch_size
+        self.batch_size = batch_size if self.sequential else None
         self.build(input_shape)
 
     def build(self, input_shape):
+        if self.stem_model.sequential:
+            assert self.batch_size is not None
+
         self.q_network.set_num_actions(self.num_actions)
         self.q_network.set_sequential(self.sequential)
         self.q_network.build()
 
         input_shape_2d, input_shape_1d = input_shape
-        if self.stem_model.sequential:  # variable-length sequences with fixed batch size
-            assert self.batch_size is not None
-            input_shape_2d = (None,) + input_shape_2d
-            input_shape_1d = (None,) + (input_shape_1d,)
-        self.inputs = [Input(shape=input_shape_2d, batch_size=self.batch_size),
-                       Input(shape=input_shape_1d, batch_size=self.batch_size)]
+        input_shape_2d = (self.batch_size,) + input_shape_2d
+        input_shape_1d = (self.batch_size,) + (input_shape_1d,)
+        
+        super(DQN, self).build([input_shape_2d, input_shape_1d])
+        '''self.stem_model.build([input_shape_2d, input_shape_1d])'''
 
-        self.outputs = self.call(self.inputs)
-        self.built = True
+        # input_shape_2d, input_shape_1d = input_shape
+        # if self.stem_model.sequential:  # variable-length sequences with fixed batch size
+        #     assert self.batch_size is not None
+        #     input_shape_2d = (None,) + input_shape_2d
+        #     input_shape_1d = (None,) + (input_shape_1d,)
+        # self.inputs = [Input(shape=input_shape_2d, batch_size=self.batch_size, name="input_2d"),
+        #                Input(shape=input_shape_1d, batch_size=self.batch_size, name="input_1d")]
+
+        # self.outputs = self.call(self.inputs)
+        # self.built = True
 
     def call(self, inputs, training=None, mask=None):
         input_2d, input_1d = inputs
@@ -45,7 +55,7 @@ class DQN(Model):
     def get_config(self):
         pass
 
-    def summary(self, line_length=None, positions=None, print_fn=None):
+    '''def summary(self, line_length=None, positions=None, print_fn=None):
         layer_utils.print_summary(self,
                                   line_length=line_length,
                                   positions=positions,
@@ -55,7 +65,7 @@ class DQN(Model):
                                 print_fn=print_fn)
         self.q_network.summary(line_length=line_length,
                                positions=positions,
-                               print_fn=print_fn)
+                               print_fn=print_fn)'''
 
     def set_hidden_and_predict(self, hidden_states, inputs):
         assert self.stem_model.sequential

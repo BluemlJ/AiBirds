@@ -216,17 +216,17 @@ class ChainBomb(ParallelEnvironment, ChainBombBase):
     HIGHSCORE_PATH_AI = "src/envs/cb/highscores_ai.json"
     HIGHSCORE_PATH_HUMAN = "src/envs/cb/highscores_human.json"
 
-    def __init__(self, num_par_envs, height=10, width=20):
+    def __init__(self, num_par_inst, height=10, width=20):
         actions = get_actions(height, width)
-        ParallelEnvironment.__init__(self, num_par_envs, actions)
-        ChainBombBase.__init__(self, num_par_envs, height, width)
+        ParallelEnvironment.__init__(self, num_par_inst, actions)
+        ChainBombBase.__init__(self, num_par_inst, height, width)
 
         # Level management
         self.mode = self.TRAIN_MODE  # level selection mode
         self.player = self.AI
 
         # State representation
-        self.fields = np.zeros((self.num_par_envs, self.height, self.width, 8), dtype="bool")
+        self.fields = np.zeros((self.num_par_inst, self.height, self.width, 8), dtype="bool")
 
         # Highscore management
         self.highscores_ai = None
@@ -234,8 +234,8 @@ class ChainBomb(ParallelEnvironment, ChainBombBase):
         self.load_highscores()
 
         # Auxiliary for step calculation
-        self.explosions_active = np.zeros(self.num_par_envs, dtype="bool")
-        self.explosions_fields = np.zeros((self.num_par_envs, self.height, self.width, 1), dtype="bool")
+        self.explosions_active = np.zeros(self.num_par_inst, dtype="bool")
+        self.explosions_fields = np.zeros((self.num_par_inst, self.height, self.width, 1), dtype="bool")
 
         # GUI rendering
         self.renderer = CBGameRenderer(self.height, self.width)
@@ -244,7 +244,7 @@ class ChainBomb(ParallelEnvironment, ChainBombBase):
         self.reset()
 
     def reset(self, lvl_no=None):
-        self.reset_for(np.arange(self.num_par_envs), lvl_no)
+        self.reset_for(np.arange(self.num_par_inst), lvl_no)
 
     def reset_for(self, ids, lvl_no=None):
         self.scores[ids] = 0
@@ -275,7 +275,7 @@ class ChainBomb(ParallelEnvironment, ChainBombBase):
         points = self.ignite_explosion(actions)
 
         # Use up bomb
-        self.inventories[range(self.num_par_envs), self.times] = 0
+        self.inventories[range(self.num_par_inst), self.times] = 0
         self.num_bombs_inv -= 1
 
         self.times += 1
@@ -344,13 +344,13 @@ class ChainBomb(ParallelEnvironment, ChainBombBase):
         return self.locs_to_coords(selected_rand_locs)
 
     def ignite_explosion(self, actions):
-        dropped_bombs = self.inventories[range(self.num_par_envs), self.times] - 1
+        dropped_bombs = self.inventories[range(self.num_par_inst), self.times] - 1
         drop_coords = self.locs_to_coords(actions)
 
-        points = np.zeros(self.num_par_envs, dtype='int32')
+        points = np.zeros(self.num_par_inst, dtype='int32')
 
         # Calculate initial explosions fields
-        ignited_bombs_locations = np.stack((np.arange(self.num_par_envs),
+        ignited_bombs_locations = np.stack((np.arange(self.num_par_inst),
                                             drop_coords[:, 0],
                                             drop_coords[:, 1],
                                             dropped_bombs), axis=1)
@@ -367,7 +367,7 @@ class ChainBomb(ParallelEnvironment, ChainBombBase):
             # Identify all bombs hit by the explosions
             hit_bombs = hit_objects[:, :, :, 1:-1]
             hit_bombs_locations = np.stack(np.where(hit_bombs), axis=1)
-            envs_with_explosions = np.arange(self.num_par_envs)[self.explosions_active]
+            envs_with_explosions = np.arange(self.num_par_inst)[self.explosions_active]
             hit_bombs_locations[:, 0] = envs_with_explosions[hit_bombs_locations[:, 0]]
 
             # Eliminate all objects inside explosion areas
@@ -432,13 +432,13 @@ class ChainBomb(ParallelEnvironment, ChainBombBase):
             self.mode = mode
             self.reset()
         elif mode == self.TEST_MODE:
-            if self.num_par_envs == 1:
+            if self.num_par_inst == 1:
                 self.current_level = 0
                 self.mode = mode
                 self.reset()
             else:
                 print("Warning: Test mode only allowed if environment simulates a single instance. "
-                      "This environment, however, has %d parallel instances." % self.num_par_envs)
+                      "This environment, however, has %d parallel instances." % self.num_par_inst)
         else:
             raise Exception("Invalid mode number given.")
 
@@ -475,21 +475,26 @@ class ChainBomb(ParallelEnvironment, ChainBombBase):
 
     def get_states(self):
         # Create one-hot representation for each inventory slot
-        inventory_one_hot = np.zeros((self.num_par_envs, 5, 6), dtype="bool")
+        inventory_one_hot = np.zeros((self.num_par_inst, 5, 6), dtype="bool")
         for slot in range(5):
             bomb_in_slot = slot < self.num_bombs_inv
             current_slot = (self.times + slot)[bomb_in_slot]
             bomb_types_in_slot = self.inventories[bomb_in_slot, current_slot]
             inventory_one_hot[bomb_in_slot, slot, bomb_types_in_slot - 1] = 1
 
-        return np.copy(self.fields), inventory_one_hot.reshape((self.num_par_envs, -1))
+        return np.copy(self.fields), inventory_one_hot.reshape((self.num_par_inst, -1))
 
     def get_state_shapes(self):
         image_state_shape = (self.height, self.width, 8)
         numerical_state_shape = 5 * 6
-        return image_state_shape, numerical_state_shape
+        return [image_state_shape, numerical_state_shape]
 
-    def image_state_to_text(self, state):
+    def get_config(self):
+        config = {"height": self.height,
+                  "width": self.width}
+        return super(ChainBomb, self).get_config().update(config)
+
+    def state_2d_to_text(self, state):
         grid_height = state.shape[0]
         grid_width = state.shape[1]
 
@@ -504,9 +509,9 @@ class ChainBomb(ParallelEnvironment, ChainBombBase):
         text += "--" * (grid_width + 2) + "-"
         return text
 
-    def numerical_state_to_text(self, numerical_state):
+    def state_1d_to_text(self, state_1d):
         text = "Inventory:"
-        for obj_one_hot in np.reshape(numerical_state, (5, 6)):
+        for obj_one_hot in np.reshape(state_1d, (5, 6)):
             text += obj_one_hot_to_symbol(obj_one_hot, True)
         return text
 

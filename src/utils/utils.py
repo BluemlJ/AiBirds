@@ -1,20 +1,26 @@
 import numpy as np
 import matplotlib.pyplot as plt
-import os
 import shutil
 import json
 import pickle
 import ctypes  # for flashing window in taskbar under Windows
+import os
+import tensorflow as tf
+
+from numpy.random import RandomState  # , SeedSequence, MT19937
 
 
-def plot(title, x_label, y_label, out_path, legend=False, logarithmic=False, show=False, keep=False):
+def plot(title, x_label, y_label, out_path, legend=False, logarithmic=False,
+         time_domain=False, show=False, keep=False):
     plt.title(title)
     plt.xlabel(x_label)
     plt.ylabel(y_label)
-    if logarithmic:
-        plt.yscale("log")
     if legend:
         plt.legend()
+    if logarithmic:
+        plt.yscale("log")
+    if time_domain:
+        plt.gca().xaxis.set_major_formatter(plt.FuncFormatter(hrs2hhmm))
     plt.savefig(out_path, dpi=400)
     if show:
         assert not keep
@@ -61,15 +67,18 @@ def angle2vector(alpha):
     return int(dx), int(dy)
 
 
-def check_for_existing_model(path):
-    if os.path.exists(path):
-        question = "There is already a model saved at '%s'. You can either override (delete) the existing\n" \
-                   "model or you can abort the program. Do you want to override the model? (y/n)" % path
-        if user_agrees_to(question):
-            shutil.rmtree(path)
-        else:
-            print("No files changed. Shutting down program.")
-            quit()
+def ask_to_override_model(path):
+    question = "There is already a model saved at '%s'. You can either override (delete) the existing\n" \
+               "model or you can abort the program. Do you want to override the model? (y/n)" % path
+    if user_agrees_to(question):
+        remove_folder(path)
+    else:
+        print("No files changed. Shutting down program.")
+        quit()
+
+
+def remove_folder(path):
+    shutil.rmtree(path)
 
 
 def config2text(config: dict):
@@ -112,6 +121,12 @@ def sec2hhmmss(s):
     m = s // 60
     h = m // 60
     return "%d:%02d:%02d h" % (h, m % 60, s % 60)
+
+
+def hrs2hhmm(h, pos=None):
+    m = int((h % 1) * 60)
+    h = h // 1
+    return "%d:%02d" % (h, m)
 
 
 def sec2hrs(s):
@@ -183,7 +198,7 @@ def pad_data_with_zero_instances(data, pad_len):
     return np.pad(data, padding_spec)
 
 
-def copy_model(model):
+def copy_object_with_config(model):
     model_class = type(model)
     return model_class(**model.get_config())
 
@@ -198,3 +213,54 @@ def print_warning(text):
 
 def print_error(text):
     print(red(text))
+
+
+def set_seed(seed):
+    np.random.seed(seed)  # TODO: apply new best practice
+    tf.random.set_seed(seed)
+    # RandomState(MT19937(SeedSequence(seed)))
+
+
+def setup_hardware(use_gpu=True, gpu_memory_limit=None):
+    if use_gpu:
+        os.environ["CUDA_VISIBLE_DEVICES"] = "0"  # make GPU visible
+    else:
+        os.environ["CUDA_VISIBLE_DEVICES"] = "-1"  # hide GPU
+
+    if use_gpu and gpu_memory_limit is not None:
+        gpus = tf.config.list_physical_devices('GPU')
+        memory_config = [tf.config.experimental.VirtualDeviceConfiguration(memory_limit=gpu_memory_limit)]
+        tf.config.experimental.set_virtual_device_configuration(gpus[0], memory_config)
+
+
+def log_model_graph(model, input_shape, log_dir="tensorboard/graphs/"):
+    if os.path.exists(log_dir):
+        remove_folder(log_dir)
+
+    @tf.function
+    def trace_fn(x):
+        return model(x)
+
+    writer = tf.summary.create_file_writer(log_dir)
+
+    input_shape_2d, input_shape_1d = input_shape
+    input_2d = tf.random.uniform((1,) + input_shape_2d)
+    input_1d = tf.random.uniform((1,) + (input_shape_1d,))
+
+    tf.summary.trace_on(graph=True, profiler=True)
+    trace_fn([input_2d, input_1d])
+    with writer.as_default():
+        tf.summary.trace_export(
+            name="DQN_model",
+            step=0,
+            profiler_outdir=log_dir)
+
+
+def bool2num(arr):
+    """Maps a boolean numpy array to a float array, where True -> 1, False -> -1."""
+    return arr.astype(dtype="float32") * 2 - 1
+
+
+def num2bool(arr):
+    """Maps a float numpy array to a boolean array, where 1 -> True, else False."""
+    return arr == 1

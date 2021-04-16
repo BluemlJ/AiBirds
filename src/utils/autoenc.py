@@ -88,11 +88,11 @@ class Autoencoder:
     def predict_and_print_result(self, generator, ids, env):
         test_data = generator.get_instances(ids)
         for test_2d, test_num in zip(*test_data):
-            print("Input:\n" + env.image_state_to_text(test_2d))
-            print(env.numerical_state_to_text(test_num))
+            print("Input:\n" + env.state_2d_to_text(test_2d))
+            print(env.state_1d_to_text(test_num))
             out_2d, out_num = self.model.predict([np.expand_dims(test_2d, axis=0), np.expand_dims(test_num, axis=0)])
-            print("Output:\n" + env.image_state_to_text(np.round(out_2d[0])))
-            print(env.numerical_state_to_text(np.round(out_num[0])) + "\n")
+            print("Output:\n" + env.state_2d_to_text(np.round(out_2d[0])))
+            print(env.state_1d_to_text(np.round(out_num[0])) + "\n")
 
     def build_compile_model(self, input_shape):
         enc_num_dim = 8

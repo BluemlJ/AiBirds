@@ -1,11 +1,11 @@
 from src.agents.comp.generic import ResNetBlock
-from src.agents.comp.stem import StemModel
+from src.agents.comp.stem import StemNetwork
 from tensorflow.keras.layers import Input, Flatten, Dense, ReLU, Convolution2D, Concatenate, BatchNormalization, \
     GlobalAvgPool2D
 from tensorflow.keras.initializers import GlorotNormal
 
 
-class ResNet(StemModel):
+class ResNet(StemNetwork):
     def __init__(self, latent_dim, latent_depth):
         super().__init__(sequential=False)
         self.latent_dim = latent_dim

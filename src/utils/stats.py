@@ -10,6 +10,9 @@ from src.envs.env import Environment
 from src.utils.logger import Logger
 from src.utils.mem import ReplayMemory
 
+# For comparison plots
+PLOT_STEP_NO = 10000
+
 
 class Statistics:
     # General stat axes
@@ -30,13 +33,16 @@ class Statistics:
     LEARNING_RATE = 3
 
     # Other constants
-    WINDOW_SIZES_EPISODES = (500, 5000, 20000)
+    WINDOW_SIZES_EPISODES = (500, 2000, 10000)
+    WINDOW_SIZES_TRANSITIONS = (500000, 5000000, 20000000)
     WINDOW_SIZES_CYCLES = (10, 50, 200)
-    EXTREME_LOSS_FACTOR = 500
+    WINDOW_SIZES_HOURS = (0.1, 0.5, 2)
+    EXTREME_LOSS_FACTOR = 1000
 
     def __init__(self, env_type: Environment = None, env: Environment = None,
                  memory: ReplayMemory = None, log_path=None):
-        self.env_type = env_type
+        assert env_type is not None or env is not None
+        self.env_type = type(env) if env_type is None else env_type
         self.env = env
         self.memory = memory
         if log_path is not None:
@@ -51,7 +57,7 @@ class Statistics:
         self.cycle_ptr = 0
 
         self.ma_score_record = 0
-        self.current_run_episode_no = 0
+        self.current_run_trans_no = 0
         self.continue_training = False
 
         self.total_timer = 0
@@ -85,7 +91,7 @@ class Statistics:
         self.episode_stats[self.episode_ptr] = [trans, seconds, ret, score, t, win,
                                                 ret_rec, score_rec, time_rec]
         self.episode_ptr += 1
-        self.current_run_episode_no += 1
+        self.current_run_trans_no += t
 
         if new_return_record and self.memory is not None and \
                 self.logger is not None and self.env is not None:
@@ -156,11 +162,11 @@ class Statistics:
             return []
 
     def get_cycle_transitions(self):
-        return self.cycle_stats[:self.episode_ptr, self.TRANSITION].astype("int")
+        return self.cycle_stats[:self.cycle_ptr, self.TRANSITION].astype("int")
 
     def get_cycle_seconds(self):
         """Returns wall-clock time in seconds."""
-        return self.cycle_stats[:self.episode_ptr, self.SECONDS].astype("int")
+        return self.cycle_stats[:self.cycle_ptr, self.SECONDS].astype("int")
 
     def get_cycle_hours(self):
         return self.get_cycle_seconds() / 3600
@@ -173,13 +179,13 @@ class Statistics:
 
     def get_current_score(self):
         if self.get_num_episodes() > 0:
-            return int(self.episode_stats[self.episode_ptr - 1, self.SCORE])
+            return self.get_scores()[-1]
         else:
             return np.nan
 
     def get_current_learning_rate(self):
         if self.get_num_cycles() > 0:
-            return self.episode_stats[self.cycle_ptr - 1, self.LEARNING_RATE]
+            return self.get_learning_rates()[-1]
         else:
             return np.nan
 
@@ -318,13 +324,13 @@ class Statistics:
                 return True
         return False
 
-    def print_stats(self, par_step, total_par_steps, num_envs, print_stats_period, epsilon):
+    def print_stats(self, par_step, total_par_steps, done_transitions, print_stats_period, epsilon: int):
         assert self.timer_started
         comp_time = time.time() - self.computation_timer
         total_time = time.time() - self.total_timer
 
-        ma_episode_size = self.WINDOW_SIZES_EPISODES[1]
-        ma_cycle_size = self.WINDOW_SIZES_CYCLES[1]
+        ma_episode_size = self.WINDOW_SIZES_EPISODES[0]
+        ma_cycle_size = self.WINDOW_SIZES_CYCLES[0]
 
         # avg_return = get_moving_avg(self.get_final_returns(), ma_episode_size)
         ma_score = get_moving_avg_val(self.get_scores(), ma_episode_size)
@@ -332,26 +338,28 @@ class Statistics:
         self.ma_score_record = np.max((self.ma_score_record, ma_score))
 
         return_record, score_record, time_record = self.get_records()
-        done_transitions = par_step * num_envs
         ma_text = num2text(ma_episode_size)
 
+        ep = num2text(self.get_num_episodes())
+        trans = num2text(done_transitions)
+        cyc = num2text(self.get_num_cycles())
+
         stats_text = "\n" + bold("Parallel step %d/%d" % (par_step, total_par_steps)) + \
-                     "\n   Completed episodes:        %s" % num2text(self.get_num_episodes()) + \
-                     "\n   Transitions done:          %s" % num2text(done_transitions) + \
-                     "\n   Epsilon:                   %.3f" % epsilon.get_value() + \
-                     "\n   " + "{:27s}".format("Score (%s MA):" % ma_text) + ("%.1f" % ma_score) + \
-                     "\n   Score record:              %.0f" % score_record
+                     "\n   # Ep. | Trans. | Cyc.:     %s | %s | %s" % (ep, trans, cyc) + \
+                     "\n   Epsilon:                   %.3f" % epsilon + \
+                     "\n   " + "{:27s}".format("Score (%s MA | record):" % ma_text) + \
+                     ("%.1f | %d" % (ma_score, score_record))
 
         if self.env_type.WINS_RELEVANT:
-            avg_wins = get_moving_avg_val(self.get_wins(), ma_episode_size)
+            ma_wins = get_moving_avg_val(self.get_wins(), ma_episode_size)
             stats_text += \
-                "\n   " + "{:27s}".format("Win-ratio (%s MA):" % ma_text) + ("%.2f" % avg_wins)
+                "\n   " + "{:27s}".format("Win-ratio (%s MA):" % ma_text) + ("%.2f" % ma_wins)
 
         if self.env_type.TIME_RELEVANT:
-            avg_time = get_moving_avg_val(self.get_times(), ma_episode_size)
+            ma_time = get_moving_avg_val(self.get_times(), ma_episode_size)
             stats_text += \
-                "\n   " + "{:27s}".format("Time (%s MA):" % ma_text) + ("%.1f" % avg_time) + \
-                "\n   Time record:               %.0f" % time_record
+                "\n   " + "{:27s}".format("Time (%s MA | record):" % ma_text) + \
+                ("%.1f | %d" % (ma_time, time_record))
 
         stats_text += "\n   " + "{:27s}".format("Loss (%s MA):" % num2text(ma_cycle_size)) + ("%.4f" % ma_loss) + \
                       "\n   Learning rate:             %.6f" % self.get_current_learning_rate() + \
@@ -375,7 +383,8 @@ class Statistics:
         self.computation_timer = time.time()
 
     def plot_stats(self, out_path):
-        if self.get_num_episodes() >= 200:  # TODO
+        if self.get_num_episodes() >= self.WINDOW_SIZES_EPISODES[0] and \
+                self.get_num_cycles() >= self.WINDOW_SIZES_CYCLES[0]:
             self.plot_scores(out_path)
             self.plot_returns(out_path)
             self.plot_times(out_path)
@@ -390,9 +399,10 @@ class Statistics:
         if len(final_scores) > 0:
             plot_moving_average(final_scores,
                                 title="Score history",
+                                x_label="Episode",
                                 y_label="Score",
                                 window_sizes=self.WINDOW_SIZES_EPISODES,
-                                output_path=out_path + "scores.png",
+                                out_path=out_path + "scores.png",
                                 show=True)
             plt.plot(self.get_score_records())
             plot(title="Score records",
@@ -405,9 +415,10 @@ class Statistics:
         if len(final_returns) > 0:
             plot_moving_average(final_returns,
                                 title="Return history",
+                                x_label="Episode",
                                 y_label="Return",
                                 window_sizes=self.WINDOW_SIZES_EPISODES,
-                                output_path=out_path + "returns.png")
+                                out_path=out_path + "returns.png")
             plt.plot(self.get_return_records())
             plot(title="Return records",
                  x_label="Episode",
@@ -418,9 +429,10 @@ class Statistics:
         if self.env_type.TIME_RELEVANT:
             plot_moving_average(self.get_times(),
                                 title="Episode length history",
+                                x_label="Episode",
                                 y_label="Time",
                                 window_sizes=self.WINDOW_SIZES_EPISODES,
-                                output_path=out_path + "times.png")
+                                out_path=out_path + "times.png")
             plt.plot(self.get_time_records())
             plot(title="Episode length records",
                  x_label="Episode",
@@ -430,9 +442,10 @@ class Statistics:
     def plot_wins(self, out_path):
         plot_moving_average(self.get_wins(),
                             title="Win-Raio",
+                            x_label="Episode",
                             y_label="Win proportion",
                             window_sizes=self.WINDOW_SIZES_EPISODES,
-                            output_path=out_path + "wins.png")
+                            out_path=out_path + "wins.png")
 
     def plot_learning_rates(self, out_path):
         if self.get_current_learning_rate() is not np.nan:
@@ -449,8 +462,8 @@ class Statistics:
             plot_moving_average(self.get_losses(),
                                 title="Training loss history",
                                 window_sizes=self.WINDOW_SIZES_CYCLES,
-                                y_label="Loss", x_label="Train cycle",
-                                output_path=out_path + "loss.png",
+                                x_label="Train cycle", y_label="Loss",
+                                out_path=out_path + "loss.png",
                                 logarithmic=True)
 
     def plot_priorities(self, out_path):
@@ -490,6 +503,8 @@ def get_moving_avg_val(values, window_size):
 def get_moving_avg_lst(values, n):
     """Computes the moving average with window size n of a list of numbers. The output list
     is padded at the beginning."""
+    if len(values) < n:
+        return []
     mov_avg = np.cumsum(values, dtype=float)
     mov_avg[n:] = mov_avg[n:] - mov_avg[:-n]
     mov_avg = mov_avg[n - 1:] / n
@@ -497,8 +512,7 @@ def get_moving_avg_lst(values, n):
     return mov_avg
 
 
-def plot_moving_average(values, title, y_label, output_path, window_sizes, x_label="Episode",
-                        logarithmic=False, validation_values=None, validation_period=None, show=False):
+def plot_moving_average(values, window_sizes, validation_values=None, validation_period=None, **kwargs):
     add_moving_avg_plot(values, window_sizes[0], color='silver')
     add_moving_avg_plot(values, window_sizes[1], color='black')
     add_moving_avg_plot(values, window_sizes[2], color='#009d81')
@@ -506,10 +520,11 @@ def plot_moving_average(values, title, y_label, output_path, window_sizes, x_lab
     if validation_values is not None and validation_period is not None:
         add_validation_plot(validation_values, validation_period)
 
-    plot(title, x_label, y_label, output_path, True, logarithmic, show)
+    plot(legend=True, **kwargs)
 
 
-def add_moving_avg_plot(y_values, window_size, x_values=None, color=None, label=None):
+def add_moving_avg_plot(y_values, window_size, x_values=None, color=None, label=None, secs2hours=False,
+                        zero2nan=False):
     if label is None:
         label = "Moving average %d" % window_size
 
@@ -519,10 +534,24 @@ def add_moving_avg_plot(y_values, window_size, x_values=None, color=None, label=
             x_values = range(len(y_values_ma))
         else:
             x_values = x_values[:len(y_values_ma)]
+
+        if secs2hours:
+            x_values = x_values / 3600
+
+        if zero2nan:
+            y_values_ma[y_values_ma <= 0] = np.nan
+
         plt.plot(x_values, y_values_ma, label=label, c=color)
+    elif label is not None:
+        add_empty_plot(label=label)
 
 
-def compare_statistics(model_names, env_type, labels=None, cut_at_episode=None, cut_at_cycle=None):
+def add_empty_plot(label):
+    plt.plot([], [], label=label)
+
+
+def compare_statistics(model_names, env_type, labels=None,
+                       cut_at_episode=None, cut_at_cycle=None, cut_at_transition=None, cut_at_hour=None):
     """Takes a list of model names, retrieves their statistics and plots them."""
     base_path = "out/%s/" % env_type.NAME
 
@@ -542,10 +571,6 @@ def compare_statistics(model_names, env_type, labels=None, cut_at_episode=None, 
     if labels is None:
         labels = model_names
 
-    s = Statistics(env_type)
-    ma_ws_episodes = s.WINDOW_SIZES_EPISODES[1]
-    ma_ws_cycles = s.WINDOW_SIZES_CYCLES[1]
-
     if cut_at_episode is None:
         cut_at_episode = max_num_episodes
     if cut_at_cycle is None:
@@ -553,142 +578,155 @@ def compare_statistics(model_names, env_type, labels=None, cut_at_episode=None, 
 
     out_path = "out/comparison_plots/"
 
+    s = Statistics(env_type)
     plot_everything(stats_collection=stats_collection,
                     labels=labels,
                     env_type=env_type,
-                    ma_ws_episodes=ma_ws_episodes,
-                    ma_ws_cycles=ma_ws_cycles,
+                    ma_ws_episodes=s.WINDOW_SIZES_EPISODES[1],
+                    ma_ws_transitions=s.WINDOW_SIZES_TRANSITIONS[1],
+                    ma_ws_cycles=s.WINDOW_SIZES_CYCLES[1],
+                    ma_ws_hours=s.WINDOW_SIZES_HOURS[1],
                     out_path=out_path,
                     cut_at_episode=cut_at_episode,
-                    cut_at_cycle=cut_at_cycle)
+                    cut_at_cycle=cut_at_cycle,
+                    cut_at_transition=cut_at_transition,
+                    cut_at_hour=cut_at_hour)
 
 
-def plot_everything(out_path, env_type: Environment, **kwargs):
+def plot_everything(out_path, env_type: Environment, ma_ws_episodes, ma_ws_transitions,
+                    ma_ws_cycles, ma_ws_hours, **kwargs):
     # (Re-)create output folder
     if os.path.exists(out_path):
         shutil.rmtree(out_path)
     os.mkdir(out_path)
 
     # Episode stats
-    for domain, x_label in zip(["episodes", "transitions", "wall-clock_time"],
-                               ["Episode", "Transition", "Wall-clock time (h)"]):
+    ep_plot_params = zip(["episodes", "transitions", "wall-clock_time"],
+                         ["Episode", "Transition", "Wall-clock time (h)"],
+                         [ma_ws_episodes, ma_ws_transitions, ma_ws_hours])
+    for domain, x_label, ma_window_size in ep_plot_params:
         sub_out_path = out_path + domain + "/"
         os.mkdir(sub_out_path)
-        compare_returns(domain=domain, x_label=x_label, out_path=sub_out_path, **kwargs)
-        compare_scores(domain=domain, x_label=x_label, out_path=sub_out_path, **kwargs)
+        kwargs.update({"domain": domain,
+                       "x_label": x_label,
+                       "ma_window_size": ma_window_size,
+                       "out_path": sub_out_path})
+        compare_returns(**kwargs)
+        compare_scores(**kwargs)
         if env_type.TIME_RELEVANT:
-            compare_times(domain=domain, x_label=x_label, out_path=sub_out_path, **kwargs)
+            compare_times(**kwargs)
         if env_type.WINS_RELEVANT:
-            compare_wins(domain=domain, x_label=x_label, out_path=sub_out_path, **kwargs)
+            compare_wins(**kwargs)
 
     # Cycle stats
-    for domain, x_label in zip(["cycles", "transitions", "wall-clock_time"],
-                               ["Cycle", "Transition", "Wall-clock time (h)"]):
+    cyc_plot_params = zip(["cycles", "transitions", "wall-clock_time"],
+                          ["Cycle", "Transition", "Wall-clock time (h)"],
+                          [ma_ws_cycles, ma_ws_transitions, ma_ws_hours])
+    for domain, x_label, ma_window_size in cyc_plot_params:
         sub_out_path = out_path + domain + "/"
         if not os.path.exists(sub_out_path):
             os.mkdir(sub_out_path)
-        compare_losses(domain=domain, x_label=x_label, out_path=sub_out_path, **kwargs)
-        compare_learning_rates(domain=domain, x_label=x_label, out_path=sub_out_path, **kwargs)
+        kwargs.update({"domain": domain,
+                       "x_label": x_label,
+                       "ma_window_size": ma_window_size,
+                       "out_path": sub_out_path})
+        compare_losses(**kwargs)
+        compare_learning_rates(**kwargs)
 
 
-def compare_returns(ma_ws_episodes, **kwargs):
-    compare_values_on_domain(name="returns",
-                             getter_handle=Statistics.get_returns,
-                             orig_domain="episodes",
-                             title="Return history comparison",
-                             y_label="Return",
-                             ma_ws_episodes=ma_ws_episodes,
-                             logarithmic=False,
-                             **kwargs)
-    compare_values_on_domain(name="return_records",
-                             getter_handle=Statistics.get_return_records,
-                             orig_domain="episodes",
-                             title="Return records comparison",
-                             y_label="Return",
-                             ma_ws_episodes=None,
-                             logarithmic=False,
-                             **kwargs)
+def compare_returns(ma_window_size, **kwargs):
+    plot_comparison_on_domain(name="returns",
+                              getter_handle=Statistics.get_returns,
+                              orig_domain="episodes",
+                              title="Return history comparison",
+                              y_label="Return",
+                              ma_window_size=ma_window_size,
+                              logarithmic=False,
+                              **kwargs)
+    plot_comparison_on_domain(name="return_records",
+                              getter_handle=Statistics.get_return_records,
+                              orig_domain="episodes",
+                              title="Return records comparison",
+                              y_label="Return",
+                              ma_window_size=None,
+                              logarithmic=False,
+                              **kwargs)
 
 
-def compare_scores(ma_ws_episodes, **kwargs):
-    compare_values_on_domain(name="scores",
-                             getter_handle=Statistics.get_scores,
-                             orig_domain="episodes",
-                             title="Score history comparison",
-                             y_label="Score",
-                             ma_ws_episodes=ma_ws_episodes,
-                             logarithmic=True,
-                             **kwargs)
-    compare_values_on_domain(name="score_records",
-                             getter_handle=Statistics.get_score_records,
-                             orig_domain="episodes",
-                             title="Score records comparison",
-                             y_label="Score",
-                             ma_ws_episodes=None,
-                             logarithmic=True,
-                             **kwargs)
+def compare_scores(ma_window_size, **kwargs):
+    plot_comparison_on_domain(name="scores",
+                              getter_handle=Statistics.get_scores,
+                              orig_domain="episodes",
+                              title="Score history comparison",
+                              y_label="Score",
+                              ma_window_size=ma_window_size,
+                              logarithmic=True,
+                              **kwargs)
+    plot_comparison_on_domain(name="score_records",
+                              getter_handle=Statistics.get_score_records,
+                              orig_domain="episodes",
+                              title="Score records comparison",
+                              y_label="Score",
+                              ma_window_size=None,
+                              logarithmic=True,
+                              **kwargs)
 
 
-def compare_times(ma_ws_episodes, **kwargs):
-    compare_values_on_domain(name="times",
-                             getter_handle=Statistics.get_times,
-                             orig_domain="episodes",
-                             title="Time history comparison",
-                             y_label="Episode length",
-                             ma_ws_episodes=ma_ws_episodes,
-                             logarithmic=True,
-                             **kwargs)
-    compare_values_on_domain(name="time_records",
-                             getter_handle=Statistics.get_score_records,
-                             orig_domain="episodes",
-                             title="Time records comparison",
-                             y_label="Episode length",
-                             ma_ws_episodes=None,
-                             logarithmic=True,
-                             **kwargs)
+def compare_times(ma_window_size, **kwargs):
+    plot_comparison_on_domain(name="times",
+                              getter_handle=Statistics.get_times,
+                              orig_domain="episodes",
+                              title="Time history comparison",
+                              y_label="Episode length",
+                              ma_window_size=ma_window_size,
+                              logarithmic=True,
+                              **kwargs)
+    plot_comparison_on_domain(name="time_records",
+                              getter_handle=Statistics.get_score_records,
+                              orig_domain="episodes",
+                              title="Time records comparison",
+                              y_label="Episode length",
+                              ma_window_size=None,
+                              logarithmic=True,
+                              **kwargs)
 
 
 def compare_wins(**kwargs):
-    compare_values_on_domain(name="wins",
-                             getter_handle=Statistics.get_wins,
-                             orig_domain="episodes",
-                             title="Win-ratio history comparison",
-                             y_label="Win proportion",
-                             logarithmic=False,
-                             **kwargs)
+    plot_comparison_on_domain(name="wins",
+                              getter_handle=Statistics.get_wins,
+                              orig_domain="episodes",
+                              title="Win-ratio history comparison",
+                              y_label="Win proportion",
+                              logarithmic=False,
+                              **kwargs)
 
 
 def compare_losses(**kwargs):
-    compare_values_on_domain(name="losses",
-                             getter_handle=Statistics.get_losses,
-                             orig_domain="cycles",
-                             title="Loss history comparison",
-                             y_label="Loss",
-                             logarithmic=True,
-                             **kwargs)
+    plot_comparison_on_domain(name="losses",
+                              getter_handle=Statistics.get_losses,
+                              orig_domain="cycles",
+                              title="Loss history comparison",
+                              y_label="Loss",
+                              logarithmic=True,
+                              **kwargs)
 
 
 def compare_learning_rates(**kwargs):
-    compare_values_on_domain(name="learning-rates",
-                             getter_handle=Statistics.get_learning_rates,
-                             orig_domain="cycles",
-                             title="Learning rate history comparison",
-                             y_label="Learning rate",
-                             logarithmic=False,
-                             **kwargs)
+    plot_comparison_on_domain(name="learning-rates",
+                              getter_handle=Statistics.get_learning_rates,
+                              orig_domain="cycles",
+                              title="Learning rate history comparison",
+                              y_label="Learning rate",
+                              logarithmic=False,
+                              **kwargs)
 
 
-def compare_values_on_domain(name, stats_collection, labels, getter_handle, domain, orig_domain, title,
-                             x_label, y_label, ma_ws_episodes, ma_ws_cycles, out_path, logarithmic,
-                             cut_at_episode, cut_at_cycle):
+def plot_comparison_on_domain(name, stats_collection, labels, getter_handle, domain, orig_domain, title,
+                              x_label, y_label, ma_window_size, out_path, logarithmic, **kwargs):
     if orig_domain == "episodes":
         get_domain = get_episodes_domain
-        cut_at = cut_at_episode
-        ma_window_size = ma_ws_episodes
     elif orig_domain == "cycles":
         get_domain = get_cycles_domain
-        cut_at = cut_at_cycle
-        ma_window_size = ma_ws_cycles
     else:
         raise ValueError("Invalid original domain given.")
 
@@ -696,42 +734,103 @@ def compare_values_on_domain(name, stats_collection, labels, getter_handle, doma
         y_label += " (%s MA)" % num2text(ma_window_size)
 
     for stats, label in zip(stats_collection, labels):
-        x_values = get_domain(stats, domain, cut_at)
-        y_values = getter_handle(stats)[:cut_at]
-        if ma_window_size is not None:
-            add_moving_avg_plot(x_values=x_values, y_values=y_values,
-                                window_size=ma_window_size, label=label)
+        x_values = get_domain(stats, domain)
+        y_values = getter_handle(stats)
+        x_values, y_values = cut_data(x_values, y_values, domain, **kwargs)
+
+        if np.all(x_values == 0):
+            add_empty_plot(label=label)
+            continue
+
+        if x_values is not None and ma_window_size is not None and domain == "wall-clock_time":
+            ma_ws = int(ma_window_size * 3600)
         else:
+            ma_ws = ma_window_size
+
+        if x_values is not None and not np.all(x_values == 0) \
+                and domain != orig_domain and ma_ws is not None:
+            x_values, y_values, step_size = interpolate(x_values, y_values)
+            ma_ws = int(ma_ws / step_size)
+
+        if ma_ws is not None:
+            if ma_ws == 0:
+                add_empty_plot(label=label)
+                continue
+            add_moving_avg_plot(x_values=x_values, y_values=y_values,
+                                window_size=ma_ws, label=label, secs2hours=domain == "wall-clock_time",
+                                zero2nan=logarithmic)
+        else:
+            if logarithmic:
+                y_values = y_values.astype("float32")
+                y_values[y_values <= 0] = np.nan
+
             if x_values is not None:
+                if domain == "wall-clock_time":
+                    x_values = x_values / 3600
                 plt.plot(x_values, y_values, label=label)
             else:
                 plt.plot(y_values, label=label)
+
     keep = logarithmic
+    time_domain = domain == "wall-clock_time"
     plot(title=title, x_label=x_label, y_label=y_label, out_path=out_path + name + ".png",
-         legend=True, logarithmic=False, keep=keep)
+         legend=True, logarithmic=False, time_domain=time_domain, keep=keep)
     if logarithmic:
         plot(title=title, x_label=x_label, y_label=y_label, out_path=out_path + "log_" + name + ".png",
-             legend=True, logarithmic=True, keep=False)
+             legend=True, logarithmic=True, time_domain=time_domain, keep=False)
 
 
-def get_episodes_domain(stats, domain, cut_at_episode):
+def interpolate(x, y):
+    step_size = x[-1] / PLOT_STEP_NO
+    x_eval = np.arange(start=x[0], stop=x[-1], step=step_size)
+    y_interp = np.interp(x_eval, x, y, left=np.nan, right=np.nan)
+    return x_eval, y_interp, step_size
+
+
+def cut_data(x_values, y_values, domain,
+             cut_at_episode, cut_at_cycle, cut_at_transition, cut_at_hour):
+    if domain == "episodes" and cut_at_episode is not None:
+        if x_values is not None:
+            x_values = x_values[:cut_at_episode]
+        y_values = y_values[:cut_at_episode]
+    elif domain == "cycles" and cut_at_cycle is not None:
+        if x_values is not None:
+            x_values = x_values[:cut_at_cycle]
+        y_values = y_values[:cut_at_cycle]
+    elif domain == "transitions" and cut_at_transition is not None:
+        x_values, y_values = cut_too_late(x_values, y_values, cut_at_transition)
+    elif domain == "wall-clock_time" and cut_at_hour is not None:
+        x_values, y_values = cut_too_late(x_values, y_values, int(cut_at_hour * 3600))
+    return x_values, y_values
+
+
+def cut_too_late(x_values, y_values, latest):
+    too_late = x_values > latest
+    if np.any(too_late):
+        cut_episode = np.argmax(too_late)
+        return x_values[:cut_episode], y_values[:cut_episode]
+    else:
+        return x_values, y_values
+
+
+def get_episodes_domain(stats, domain):
     if domain == "episodes":
         return None
     elif domain == "transitions":
-        return stats.get_episode_transitions()[:cut_at_episode]
+        return stats.get_episode_transitions()
     elif domain == "wall-clock_time":
-        return stats.get_episode_hours()[:cut_at_episode]
+        return stats.get_episode_seconds()
     else:
         raise ValueError("Invalid domain name provided.")
 
 
-def get_cycles_domain(stats, domain, cut_at_cycle):
+def get_cycles_domain(stats, domain):
     if domain == "cycles":
         return None
     elif domain == "transitions":
-        return stats.get_cycle_transitions()[:cut_at_cycle]
+        return stats.get_cycle_transitions()
     elif domain == "wall-clock_time":
-        return stats.get_cycle_hours()[:cut_at_cycle]
+        return stats.get_cycle_seconds()
     else:
         raise ValueError("Invalid domain name provided.")
 

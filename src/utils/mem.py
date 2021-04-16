@@ -1,26 +1,25 @@
 import numpy as np
-from src.utils.utils import del_first, print_error
+from src.utils.utils import del_first, print_error, yellow, orange
 
 
 class ReplayMemory:
-    def __init__(self, memory_size, state_shape_2d, state_shape_1d, hidden_state_shape=None,
+    def __init__(self, memory_size, state_shape, hidden_state_shape=None,
                  sequence_len=None, sequence_shift=None, eta=0.9):
         """A finite buffer for saving and sampling transitions.
 
         :param memory_size: the number of transitions the ReplayMemory can hold at most
-        :param state_shape_2d: list of image state dimensions
-        :param state_shape_1d: list of numerical state dimensions
+        :param state_shape: list of 2d and 1d state dimensions
         """
 
         self.memory_size = memory_size
         self.stack_ptr = 0
         self.seq_ptr = 0
-        self.state_shape_2d = state_shape_2d
-        self.state_shape_1d = state_shape_1d
+        self.state_shape_2d = state_shape[0]
+        self.state_shape_1d = state_shape[1]
         self.hidden_state_shape = hidden_state_shape
         self.sequential = hidden_state_shape is not None
 
-        self.states_2d = np.zeros(shape=np.append([self.memory_size], self.state_shape_2d), dtype='bool')
+        self.states_2d = np.zeros(shape=np.append([self.memory_size], self.state_shape_2d), dtype='float32')
         self.states_1d = np.zeros(shape=np.append([self.memory_size], self.state_shape_1d), dtype='float32')
         self.actions = np.zeros(shape=self.memory_size, dtype='int')
         self.scores = np.zeros(shape=self.memory_size, dtype='int')  # score *difference* between two transitions
@@ -60,9 +59,9 @@ class ReplayMemory:
 
         remaining_space = self.memory_size - self.stack_ptr
         if ep_len > remaining_space:
-            print("WARNING: Episode too large to save. Episode has length %d but memory has"
-                  "\n         remaining space for only %d transitions. Dropping this Episode." %
-                  (ep_len, remaining_space))
+            print(orange("WARNING: Episode too large to save. Episode has length %d but memory has"
+                         "\n         remaining space for only %d transitions. Dropping this Episode." %
+                         (ep_len, remaining_space)))
             return
 
         # Save observed data
@@ -94,8 +93,8 @@ class ReplayMemory:
         self.stack_ptr = end_ptr
 
         if self.stack_ptr / self.memory_size > 0.98:
-            print("WARNING: Memory is running out of space! Only %.1f %% (%d transitions) left!" %
-                  (100 - self.stack_ptr / self.memory_size * 100, remaining_space))
+            print(yellow("Info: Memory is running out of space! Only %.1f %% (%d transitions) left!" %
+                         (100 - self.stack_ptr / self.memory_size * 100, remaining_space)))
 
     def recall_single_transitions(self, num_transitions, alpha):
         """Returns a batch of transition IDs, depending on the transitions' priorities.
@@ -265,8 +264,8 @@ class ReplayMemory:
     def get_trans_text(self, idx, env):
         action_names = env.actions
         text = "\nTransition %d:\n" % idx + \
-               env.image_state_to_text(self.states_2d[idx]) + "\n" + \
-               env.numerical_state_to_text(self.states_1d[idx]) + \
+               env.state_2d_to_text(self.states_2d[idx]) + "\n" + \
+               env.state_1d_to_text(self.states_1d[idx]) + \
                "\nAction:     " + str(action_names[self.actions[idx]]) + \
                "\nReward:     " + str(self.rewards[idx]) + \
                "\nScore gain: " + str(self.scores[idx]) + \
@@ -311,12 +310,13 @@ def choice_by_priority(num_instances, priorities, alpha):
     # Take power of each element with alpha to adjust priorities
     adjusted_priorities = np.power(priorities, alpha)
 
-    # Convert priorities into probabilities
     total_prio = np.sum(adjusted_priorities)
     if total_prio == 0:  # Catch
         print_error("Error: All given priorities are zero! Since this is practically impossible, "
                     "something might be wrong.\nThis is no critical error, hence, training continues.")
         return [], []
+
+    # Convert priorities into probabilities
     probabilities = adjusted_priorities / np.sum(adjusted_priorities)
 
     # Handle cases with less non-zero probabilities than sample_size

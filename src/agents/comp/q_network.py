@@ -1,10 +1,9 @@
 import tensorflow as tf
 from abc import ABCMeta
-from tensorflow import keras
-from tensorflow.keras.layers import Dense, LeakyReLU
+from tensorflow.keras.layers import Dense, LeakyReLU, Layer
 
 
-class QNetwork(keras.Model, metaclass=ABCMeta):
+class QNetwork(Layer, metaclass=ABCMeta):
     def __init__(self, **kwargs):
         super(QNetwork, self).__init__(**kwargs)
         self.num_actions = None
@@ -44,6 +43,8 @@ class DoubleQNetwork(QNetwork):
         # Advantage
         self.latent_a = Dense(self.latent_a_dim, name='latent_A', activation="relu")
         self.advantage = Dense(self.num_actions, name='A')
+        
+        super(DoubleQNetwork, self).build(input_shape)
 
     def get_config(self):
         config = {"latent_v_dim": self.latent_v_dim,

@@ -1,9 +1,9 @@
-from src.agents.comp.stem import StemModel
+from src.agents.comp.stem import StemNetwork
 from tensorflow.keras.layers import Input, Flatten, Dense, ReLU, Convolution2D, MaxPool2D
 from tensorflow.keras.initializers import GlorotNormal
 
 
-class ClassicConv(StemModel):
+class ClassicConv(StemNetwork):
     def __init__(self, latent_dim):
         super().__init__(sequential=False)
         self.latent_dim = latent_dim

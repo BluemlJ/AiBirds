@@ -40,9 +40,9 @@ class Tetris(ParallelEnvironment):
     TIME_RELEVANT = True
     WINS_RELEVANT = False
 
-    def __init__(self, num_par_envs=256, height=20, width=10, style_name="minimal"):
+    def __init__(self, num_par_inst=256, height=20, width=10, style_name="minimal"):
         actions = ['IDLE', 'MOVE_LEFT', 'MOVE_RIGHT', 'ROT_RIGHT']
-        super().__init__(num_par_envs, actions)
+        super().__init__(num_par_inst, actions)
 
         self.height = height
         self.width = width
@@ -51,12 +51,12 @@ class Tetris(ParallelEnvironment):
 
         self.speed = 500
 
-        self.fields = np.zeros(shape=(self.num_par_envs, self.height, self.width), dtype='bool')
+        self.fields = np.zeros(shape=(self.num_par_inst, self.height, self.width), dtype='bool')
 
         # Falling block properties
-        self.fb_fields = np.zeros(shape=(self.num_par_envs, self.height, self.width), dtype='bool')
-        self.fb_shapes = np.zeros(shape=(self.num_par_envs, 4, 4), dtype='bool')
-        self.fb_anchors = np.zeros(shape=(self.num_par_envs, 2), dtype='int8')
+        self.fb_fields = np.zeros(shape=(self.num_par_inst, self.height, self.width), dtype='bool')
+        self.fb_shapes = np.zeros(shape=(self.num_par_inst, 4, 4), dtype='bool')
+        self.fb_anchors = np.zeros(shape=(self.num_par_inst, 2), dtype='int8')
 
         self.FB_PADDING = 3  # prevents index out of bounds exceptions
 
@@ -65,7 +65,7 @@ class Tetris(ParallelEnvironment):
         # For rendering purposes
         self.screen = None
 
-        if self.num_par_envs < 8:
+        if self.num_par_inst < 8:
             self.init_gui()
 
     def reset(self):
@@ -94,7 +94,7 @@ class Tetris(ParallelEnvironment):
 
     def spawn_falling_blocks(self, ids=None):
         if ids is None:
-            ids = np.arange(self.num_par_envs)
+            ids = np.arange(self.num_par_inst)
 
         self.fb_shapes[ids] = BLOCK_TYPES_TENSOR[np.random.choice(len(BLOCK_TYPES_TENSOR), size=len(ids), replace=True)]
         self.fb_anchors[ids] = self.SPAWN_COORDS
@@ -112,7 +112,7 @@ class Tetris(ParallelEnvironment):
 
         grounded_ids = self.gravity()
 
-        self.compute_fb_fields(range(self.num_par_envs))
+        self.compute_fb_fields(range(self.num_par_inst))
 
         if len(grounded_ids):
             self.place_falling_block(grounded_ids)  # 1 ms
@@ -165,7 +165,7 @@ class Tetris(ParallelEnvironment):
         self.fb_anchors[:, 0] += 1
 
         # Check if any falling block grounded, i.e., touched a lying block or touched the ground
-        _, grounded, still_entering = self.check_for_collisions(range(self.num_par_envs))  # 104 ms
+        _, grounded, still_entering = self.check_for_collisions(range(self.num_par_inst))  # 104 ms
 
         self.game_overs = grounded & still_entering | self.game_overs
 
@@ -213,12 +213,17 @@ class Tetris(ParallelEnvironment):
         Empty fields are represented by False, all others by True."""
 
         states = np.stack((self.fields, self.fb_fields), axis=3)
-        return states, self.num_par_envs * [[]]
+        return states, self.num_par_inst * [[]]
 
     def get_state_shapes(self):
         image_state_shape = (self.height, self.width, 2)
         numerical_state_shape = 0
-        return image_state_shape, numerical_state_shape
+        return [image_state_shape, numerical_state_shape]
+
+    def get_config(self):
+        config = {"height": self.height,
+                  "width": self.width}
+        return super(Tetris, self).get_config().update(config)
 
     def rotate_figure(self, ids, direction):
         shapes_old = self.fb_shapes[ids].copy()
@@ -291,7 +296,7 @@ class Tetris(ParallelEnvironment):
         self.screen.blit(text, rect)
 
         # render environment instances
-        for instance_id in range(self.num_par_envs):
+        for instance_id in range(self.num_par_inst):
 
             """env_marg_left = (self.screen.get_width() - self.num_par_envs * (FIELD_SZ * self.width) - (
                     self.num_par_envs - 1) * FIELD_SZ) // 2 + instance_id * (
@@ -342,7 +347,7 @@ class Tetris(ParallelEnvironment):
         pygame.display.flip()
         # self.clock.tick(self.speed)
 
-    def image_state_to_text(self, state):
+    def state_2d_to_text(self, state):
         lying_block_grid = state[:, :, 0]
         falling_block_grid = state[:, :, 1]
         grid_width = state.shape[1]

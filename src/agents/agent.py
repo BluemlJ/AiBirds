@@ -5,65 +5,65 @@ os.environ['TF_CPP_MIN_LOG_LEVEL'] = "2"  # let TF only print errors
 import tensorflow as tf
 import numpy as np
 
-from src.utils import ReplayMemory, Statistics, Epsilon, LearningRate, Observations, \
-    copy_model, plot_highscores, config2text, check_for_existing_model, config2json, json2config
+from src.utils import ReplayMemory, Statistics, DecayParam, Observations, \
+    copy_object_with_config, plot_highscores, config2text, ask_to_override_model, config2json, json2config, \
+    remove_folder, log_model_graph
+from src.envs.env import ParallelEnvironment
 from src.agents.comp import *
-
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"  # make GPU visible
-
-gpus = tf.config.list_physical_devices('GPU')
-memory_config = [tf.config.experimental.VirtualDeviceConfiguration(memory_limit=4096)]
-tf.config.experimental.set_virtual_device_configuration(gpus[0], memory_config)
 
 # Miscellaneous
 PLOT_PERIOD = 5000  # number of transitions between each learning statistics plot
 PRINT_STATS_PERIOD = 100
 CHECKPOINT_SAVE_PERIOD = 5000
-TEST_PERIOD = 2000
+TEST_PERIOD = 5000
 
 
 class Agent:
     """Deep Q-Network (DQN) agent for playing Tetris, Snake or other games"""
 
-    def __init__(self, env_type, stem_model: StemModel, q_network: QNetwork,
-                 name, num_parallel_envs, replay_batch_size, sequence_shift=None, eta=0.9,
-                 use_double=True,
+    def __init__(self, env: ParallelEnvironment, stem_network: StemNetwork, q_network: QNetwork,
+                 name, replay_batch_size, sequence_shift=None, eta=0.9,
+                 use_double=True, use_distributed=True,
                  obs_buf_size=100, mem_size=10000,
-                 use_pretrained=False, override=False, **kwargs):
+                 use_pretrained=False, override=False, seed=None):
         """Constructor
-        :param env_type: The environment in which the agent acts
-        :param stem_model: The main stem model
+        :param env: The (instantiated) environment in which the agent acts
+        :param stem_network: The main stem model
         :param q_network: The Q-network (coming after the stem model)
-        :param num_parallel_envs: The number of environments which are executed simultaneously
         :param name: A string identifying the agent in file names
         :param use_double: If True the Double Q-Learning extension is used
-        :param kwargs: Arguments for the used environment (e.g., height and width)
         """
 
         print("Initializing DQN agent...")
 
         # General
         self.name = name
+        self.seed = seed
 
         # Environment
-        self.num_par_envs = num_parallel_envs
-        self.env_type = env_type
-        self.env, self.state_shape_2d, self.state_shape_1d, self.num_actions = self.init_env(kwargs)
+        self.env = env
+        self.num_par_envs = self.env.num_par_inst
+        self.state_shape = self.env.get_state_shapes()
+        self.num_actions = self.env.get_number_of_actions()
 
+        if name == "debug":
+            override = True
         self.out_path = self.setup_out_path(override)
 
         # For training
         self.replay_batch_size = replay_batch_size
         self.learning_rate = None
         self.epsilon = None
+        self.delta = None
 
         # Model architecture
-        self.sequential = stem_model.sequential
-        self.sequence_len = stem_model.sequence_len
-        self.stem_model = stem_model
+        self.stem_network = stem_network
+        self.sequential = stem_network.sequential
+        self.sequence_len = stem_network.sequence_len
         self.q_network = q_network
         self.optimizer = tf.optimizers.Adam()
         self.online_learner = self.init_online_learner()
+        log_model_graph(self.online_learner, self.state_shape)
 
         # Double Q-Learning
         self.double = use_double
@@ -72,6 +72,7 @@ class Agent:
         self.target_learner = self.init_target_learner()
 
         # Distributed RL
+        self.distributed = use_distributed
         self.actor = self.init_actor()
 
         # Training loss
@@ -82,22 +83,18 @@ class Agent:
         self.obs_buf_size = obs_buf_size
         self.mem_size = mem_size
         self.memory = ReplayMemory(memory_size=self.mem_size,
-                                   state_shape_2d=self.state_shape_2d,
-                                   state_shape_1d=self.state_shape_1d,
-                                   hidden_state_shape=self.stem_model.get_hidden_state_shape(),
+                                   state_shape=self.state_shape,
+                                   hidden_state_shape=self.stem_network.get_hidden_state_shape(),
                                    sequence_len=self.sequence_len,
                                    sequence_shift=sequence_shift,
                                    eta=eta)
-        self.stats = Statistics(self.env_type, self.env, self.memory, log_path=self.out_path)
+        self.stats = Statistics(env=self.env, memory=self.memory, log_path=self.out_path)
 
         self.save_config()
         print('DQN agent initialized.')
 
-    def init_online_learner(self):
-        model = DQN(self.stem_model, self.q_network, (self.state_shape_2d, self.state_shape_1d),
-                    self.num_actions, self.replay_batch_size)
-        model.compile(loss='huber_loss', optimizer=self.optimizer)
-
+    def init_online_learner(self) -> tf.keras.Model:
+        model = self.init_model(self.stem_network, self.q_network, self.replay_batch_size)
         model.summary()
 
         # the following needs separate GraphViz installation from https://graphviz.gitlab.io/download/
@@ -106,50 +103,61 @@ class Agent:
                                   show_layer_names=True, expand_nested=True, dpi=400)
         return model
 
+    def init_model(self, stem_net: StemNetwork, q_net: QNetwork, batch_size):
+        q_net.set_num_actions(self.num_actions)
+        q_net.set_sequential(self.sequential)
+        q_net.build()
+        inputs, latent = stem_net.get_functional_graph(self.state_shape, batch_size)
+        outputs = q_net(latent)
+        model = tf.keras.Model(inputs=inputs, outputs=outputs)
+        model.compile(loss='huber_loss', optimizer=self.optimizer)
+        return model
+
     def init_target_learner(self):
         if self.double:
-            return self.copy_dqn(batch_size=self.replay_batch_size)
+            return self.online_learner.clone_model()
         else:
             return self.online_learner
 
     def init_actor(self):
-        return self.copy_dqn(batch_size=self.num_par_envs)
-
-    def copy_dqn(self, batch_size):
-        stem_model = copy_model(self.stem_model)
-        q_network = copy_model(self.q_network)
-        model = DQN(stem_model, q_network, (self.state_shape_2d, self.state_shape_1d),
-                    self.num_actions, batch_size)
-        model.compile(loss='huber_loss', optimizer=self.optimizer)
-        model.set_weights(self.online_learner.get_weights())
-        return model
-
-    def init_env(self, env_args):
-        env = self.env_type(**env_args, num_par_envs=self.num_par_envs)
-        state_shape_2d, state_shape_1d = env.get_state_shapes()
-        num_actions = env.get_number_of_actions()
-        return env, state_shape_2d, state_shape_1d, num_actions
+        if self.distributed:
+            stem_net = copy_object_with_config(self.stem_network)
+            q_net = copy_object_with_config(self.q_network)
+            model = self.init_model(stem_net, q_net, self.num_par_envs)
+            model.set_weights(self.online_learner.get_weights())
+            return model
+        else:
+            return self.online_learner
 
     def load_pretrained_model(self):
-        pretrained_path = "out/" + self.env_type.NAME + "/pretrained"
+        pretrained_path = "out/" + self.env.NAME + "/pretrained"
         if not os.path.exists(pretrained_path):
             Exception("You specified to load a pretrained model. However, there is no pretrained model "
                       "at '%s'." % pretrained_path)
 
         self.online_learner.load_weights(pretrained_path + "/pretrained", by_name=True)
 
-    def reinit_env(self, num_envs, **kwargs):
-        if self.env is not None:
-            del self.env
-        self.num_par_envs = num_envs
-        self.env, self.state_shape_2d, self.state_shape_1d, self.num_actions = self.init_env(kwargs)
+    def reinit_env(self, num_par_envs):
+        self.num_par_envs = num_par_envs
+        new_env = self.env.copy(num_par_envs)
+        del self.env
+        self.env = new_env
+
+    def get_hidden_states_of(self, model):
+        if self.sequential:
+            return None  # TODO
+        else:
+            return None
+
+    def reset_cell_states_for(self, model, ids):
+        pass  # TODO
 
     def practice(self, num_parallel_steps,
                  replay_period, replay_size_multiplier, replay_epochs,
-                 learning_rate: LearningRate,
+                 learning_rate: DecayParam,
                  target_sync_period, actor_sync_period,
-                 gamma, epsilon: Epsilon,
-                 delta, delta_anneal,
+                 gamma, epsilon: DecayParam,
+                 delta: DecayParam,
                  alpha,
                  verbose=False):
         """The agent's main training routine.
@@ -169,22 +177,21 @@ class Agent:
         :param epsilon: Epsilon class, probability for random shot (epsilon greedy policy)
         :param delta: Trade-off factor between Monte Carlo target return and one-step target return,
                    delta = 1 means MC return, delta = 0 means one-step return
-        :param delta_anneal: Decrease factor for delta
         :param alpha: For Prioritized Experience Replay: the larger alpha the stronger prioritization
         :param verbose:
         """
 
         self.learning_rate = learning_rate
         self.epsilon = epsilon
+        self.delta = delta
 
         # Save all hyperparameters in txt file
         self.write_hyperparams_file(num_parallel_steps, replay_period, replay_size_multiplier, target_sync_period,
-                                    alpha, gamma, delta, delta_anneal)
+                                    alpha, gamma)
 
         # Initialize observations buffer with fixed size
         obs = Observations(self.obs_buf_size, self.num_par_envs,
-                           self.state_shape_2d, self.state_shape_1d,
-                           self.stem_model.get_hidden_state_shape())
+                           self.state_shape, self.stem_network.get_hidden_state_shape())
 
         new_transitions = 0
 
@@ -196,12 +203,13 @@ class Agent:
         self.stats.start_timer()
 
         for i in range(1, num_parallel_steps + 1):
-            states = self.get_states()
+            done_transitions = (i - 1) * self.num_par_envs
 
-            hidden_states = self.actor.stem_model.get_cell_states()
+            states = self.get_states()
+            hidden_states = self.get_hidden_states_of(self.actor)
 
             # Predict the next action to take (move, rotate or do nothing)
-            actions, _ = self.plan(states, epsilon.get_value())
+            actions, _ = self.plan_epsilon_greedy(states, self.epsilon.get_value(done_transitions))
 
             # Perform actions, observe new environment state, level score and application state
             rewards, scores, game_overs, times, wins = self.env.step(actions)
@@ -230,7 +238,7 @@ class Agent:
                 obs.begin_new_episode_for(fin_env_ids)
 
                 # Reset actor's LSTM states (if any) to zero
-                self.actor.stem_model.reset_cell_states_for(fin_env_ids)
+                self.reset_cell_states_for(self.actor, fin_env_ids)
 
             # Every X episodes, plot informative graphs
             if i % PLOT_PERIOD == 0:
@@ -241,10 +249,10 @@ class Agent:
                 self.test_on_levels()
 
             # Update the network weights every train_period levels to fit experience
-            if i % replay_period == 0:  # and self.memory.get_length() >= replay_size:
-                replay_size = replay_size_multiplier * new_transitions
-                learned_trans = self.learn(replay_size, gamma, delta, epochs=replay_epochs,
-                                           alpha=alpha, verbose=verbose)
+            replay_size = replay_size_multiplier * new_transitions
+            if i % replay_period == 0 and replay_size > 0:
+                learned_trans = self.learn(replay_size, gamma, delta=self.delta.get_value(done_transitions),
+                                           epochs=replay_epochs, alpha=alpha, verbose=verbose)
                 new_transitions = max(0, new_transitions - learned_trans)
 
             # Save model checkpoint
@@ -260,16 +268,12 @@ class Agent:
                 self.target_learner.set_weights(self.online_learner.get_weights())
 
             # Synchronize learner and actor
-            if i % actor_sync_period == 0:
+            if self.distributed and i % actor_sync_period == 0:
                 self.actor.set_weights(self.online_learner.get_weights())
 
             if i % PRINT_STATS_PERIOD == 0:
-                self.stats.print_stats(i, num_parallel_steps, self.num_par_envs,
-                                       PRINT_STATS_PERIOD, epsilon)
-
-            # Cool down
-            epsilon.decay()  # reduces randomness (less explore, more exploit)
-            delta *= delta_anneal  # shifts target return fom MC to one-step
+                self.stats.print_stats(i, num_parallel_steps, done_transitions,
+                                       PRINT_STATS_PERIOD, self.epsilon.get_value(done_transitions))
 
         self.save()
         self.stats.logger.close()
@@ -313,7 +317,7 @@ class Agent:
         exp_len = self.memory.get_length()
 
         # Get list of transitions
-        states, hidden_states, actions, rewards, next_states, last_hidden_states, terminals = \
+        states, _, actions, rewards, next_states, _, terminals = \
             self.memory.get_transitions(trans_ids)
 
         # Obtain Monte Carlo return for each transition
@@ -433,7 +437,7 @@ class Agent:
         x_2d, x_1d = x
         train_dataset = (x_2d, x_1d, y, sample_weights, hidden_states, mask)
         train_dataset = tf.data.Dataset.from_tensor_slices(train_dataset).batch(batch_size)
-        # train_dataset = train_dataset.shuffle(buffer_size=1024) is already random
+        # train_dataset = train_dataset.shuffle(buffer_size=1024, seed=self.seed)
         predictions = np.zeros(y.shape)
         individual_losses = np.zeros(y.shape[:-1])
         train_loss = 0
@@ -449,7 +453,9 @@ class Agent:
                 if self.sequential:
                     self.online_learner.reset_states()
                     self.online_learner.stem_model.set_cell_states(hidden_states_b)
-                batch_individual_losses, batch_out = self.train_step(x_2d_b, x_1d_b, y_b, sample_weight_b, mask_b)
+
+                batch_individual_losses, batch_out =\
+                    self.train_step(x_2d_b, x_1d_b, y_b, sample_weight_b, mask_b)
 
                 if epoch == epochs - 1:
                     at_instance = step * batch_size
@@ -469,8 +475,6 @@ class Agent:
 
         if verbose:
             print("Fitting took %.2f s." % (time.time() - start))
-
-        # individual_losses /= epochs
 
         return train_loss, individual_losses, predictions
 
@@ -498,40 +502,46 @@ class Agent:
 
         return losses, out
 
-    def plan(self, states, epsilon):
+    def plan_epsilon_greedy(self, states, epsilon, output_return=False):
         """Epsilon greedy policy. With a probability of epsilon, a random action is returned. Else,
         the agent predicts the best shot for the given state.
 
         :param states: List of state matrices
         :param epsilon: If given, epsilon greedy policy will be applied, otherwise the agent plans optimally
+        :param output_return:
         :return: action: An index number, corresponding to an action
         """
 
+        if np.random.random(1) < epsilon:
+            # Random action
+            actions = np.random.randint(self.num_actions, size=self.num_par_envs)
+            if self.sequential or output_return:  # Update hidden state
+                self.plan(states)
+            return actions, None
+        else:
+            # Optimal action
+            return self.plan(states)
+
+    def plan(self, states):
         if self.sequential:
             states_2d, states_1d = states
             states_2d = np.expand_dims(states_2d, axis=1)
             states_1d = np.expand_dims(states_1d, axis=1)
             states = (states_2d, states_1d)
 
-        # Obtain list of action-values Q(s,a)
         batch_size = self.num_par_envs if self.sequential else self.replay_batch_size
+
         q_vals = self.actor.predict(states, batch_size=batch_size)
         if self.sequential:
             q_vals = np.squeeze(q_vals, axis=1)
-        pred_rets = np.max(q_vals, axis=1)
 
-        # Do epsilon-greedy
-        if np.random.random(1) < epsilon:
-            # Random action
-            actions = np.random.randint(self.num_actions, size=self.num_par_envs)
-        else:
-            # Optimal action
-            actions = q_vals.argmax(axis=1)
+        actions = q_vals.argmax(axis=1)
+        pred_rets = np.max(q_vals, axis=1)
 
         return actions, pred_rets
 
     def update_lr(self):
-        new_lr = self.learning_rate.get_value(self.stats.current_run_episode_no)
+        new_lr = self.learning_rate.get_value(self.stats.current_run_trans_no)
         self.optimizer.learning_rate.assign(new_lr)
 
     def learn_entire_experience(self, batch_size, epochs, gamma, delta, alpha):
@@ -592,7 +602,7 @@ class Agent:
             state = self.env.get_states()
 
             # Predict the next action to take (move, rotate or do nothing)
-            action, pred_rets = self.plan(state, epsilon)
+            action, pred_rets = self.plan_epsilon_greedy(state, epsilon, output_return=True)
 
             if verbose:
                 print("{:>11.2f}".format(ret) + " | " +
@@ -614,7 +624,7 @@ class Agent:
         return ret, score
 
     def test_on_levels(self, render=False):
-        test_env = self.env_type(1)
+        test_env = self.env.copy(1)
         test_env.set_mode(test_env.TEST_MODE)
         num_levels = len(test_env.levels_list)
         test_scores = np.zeros(num_levels)
@@ -632,7 +642,7 @@ class Agent:
                 state = test_env.get_states()
 
                 # Predict the next action to take (move, rotate or do nothing)
-                action, _ = self.plan(state, 0)
+                action, _ = self.plan_epsilon_greedy(state, 0)
 
                 # Perform action, observe new environment state, level score and application state
                 _, score, game_over, _, _ = test_env.step(action)
@@ -648,7 +658,7 @@ class Agent:
 
     def get_config(self):
         """Keep compatible with load_model()!"""
-        stem_config = self.stem_model.get_config()
+        stem_config = self.stem_network.get_config()
         q_config = self.q_network.get_config()
         # lr_config = self.learning_rate.get_config()
         agent_config = {"num_parallel_envs": self.num_par_envs,
@@ -657,9 +667,10 @@ class Agent:
                         "use_double": self.double,
                         "obs_buf_size": self.obs_buf_size,
                         "mem_size": self.mem_size,
-                        "eta": self.memory.eta}
+                        "eta": self.memory.eta,
+                        "seed": self.seed}
 
-        config = {"stem_model_class": self.stem_model.__class__.__name__,
+        config = {"stem_model_class": self.stem_network.__class__.__name__,
                   "stem_model_config": stem_config,
                   "q_network_class": self.q_network.__class__.__name__,
                   "q_network_config": q_config,
@@ -728,14 +739,13 @@ class Agent:
 
     def forget(self):
         self.memory = ReplayMemory(memory_size=self.mem_size,
-                                   state_shape_2d=self.state_shape_2d,
-                                   state_shape_1d=self.state_shape_1d)
+                                   state_shape=self.state_shape)
 
     def print_transitions(self, ids):
         self.memory.print_trans_from(ids, self.env)
 
     def write_hyperparams_file(self, num_parallel_steps, replay_period, replay_size_multiplier, sync_period,
-                               alpha, gamma, delta, delta_anneal):
+                               alpha, gamma):
         hyperparams_file = open(self.out_path + "hyperparams.txt", "w+")
         text = "num_parallel_steps: %d" % num_parallel_steps + \
                "\nnum_parallel_envs: %d" % self.num_par_envs + \
@@ -745,26 +755,25 @@ class Agent:
                "\n\nalpha: %f" % alpha + \
                "\ngamma: %f" % gamma + \
                "\neta: %f" % self.memory.eta + \
-               "\ndelta: %f" % delta + \
-               "\ndelta_anneal: %f" % delta_anneal + \
                "\nobs_buf_size: %d" % self.obs_buf_size + \
                "\nexp_buf_size: %d" % self.mem_size
+        if self.seed is not None:
+            text += "\nseed: %d" % self.seed
 
         text += "\n\nSTEM MODEL PARAMETERS:"
-        stem_config = self.stem_model.get_config()
-        text += config2text(stem_config)
+        text += config2text(self.stem_network.get_config())
 
         text += "\n\nQ-NETWORK PARAMETERS:"
-        q_config = self.q_network.get_config()
-        text += config2text(q_config)
+        text += config2text(self.q_network.get_config())
 
         text += "\n\nLEARNING RATE:"
-        lr_config = self.learning_rate.get_config()
-        text += config2text(lr_config)
+        text += config2text(self.learning_rate.get_config())
 
         text += "\n\nEPSILON:"
-        eps_config = self.epsilon.get_config()
-        text += config2text(eps_config)
+        text += config2text(self.epsilon.get_config())
+
+        text += "\n\nDELTA:"
+        text += config2text(self.delta.get_config())
 
         hyperparams_file.write(text + "\n\n")
         self.online_learner.summary(print_fn=lambda x: hyperparams_file.write(x + '\n'))
@@ -772,8 +781,11 @@ class Agent:
 
     def setup_out_path(self, override=False):
         out_path = "out/%s/%s/" % (self.env.NAME, self.name)
-        if not override:
-            check_for_existing_model(out_path)
+        if os.path.exists(out_path):
+            if override:
+                remove_folder(out_path)
+            else:
+                ask_to_override_model(out_path)
         os.makedirs(out_path, exist_ok=True)
         return out_path
 
@@ -809,14 +821,12 @@ def load_model(model_name, env, checkpoint_no=None):
     stem_config = config["stem_model_config"]
     q_class = eval(config["q_network_class"])
     q_config = config["q_network_config"]
-    # lr_config = config["lr_config"]
     agent_config = config["agent_config"]
 
-    stem_model = stem_class(**stem_config)
-    q_network = q_class(**q_config)
-    # lr = LearningRate(**lr_config)
+    stem_net = stem_class(**stem_config)
+    q_net = q_class(**q_config)
 
-    agent = Agent(env_type=env, stem_model=stem_model, q_network=q_network,
+    agent = Agent(env=env, stem_network=stem_net, q_network=q_net,
                   name="tmp", override=True, **agent_config)
     agent.restore(model_name, checkpoint_no)
     return agent
