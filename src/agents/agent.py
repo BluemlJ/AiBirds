@@ -5,14 +5,14 @@ os.environ['TF_CPP_MIN_LOG_LEVEL'] = "2"  # let TF only print errors
 import tensorflow as tf
 import numpy as np
 
-from src.utils import ReplayMemory, Statistics, DecayParam, Observations, \
+from src.utils import ReplayMemory, Statistics, ParamScheduler, Observations, \
     copy_object_with_config, plot_highscores, config2text, ask_to_override_model, config2json, json2config, \
     remove_folder, log_model_graph
 from src.envs.env import ParallelEnvironment
 from src.agents.comp import *
 
 # Miscellaneous
-PLOT_PERIOD = 5000  # number of transitions between each learning statistics plot
+PLOT_SAVE_STATS_PERIOD = 1000  # number of transitions between each learning statistics plot
 PRINT_STATS_PERIOD = 100
 CHECKPOINT_SAVE_PERIOD = 5000
 TEST_PERIOD = 5000
@@ -154,10 +154,10 @@ class Agent:
 
     def practice(self, num_parallel_steps,
                  replay_period, replay_size_multiplier, replay_epochs,
-                 learning_rate: DecayParam,
+                 learning_rate: ParamScheduler,
                  target_sync_period, actor_sync_period,
-                 gamma, epsilon: DecayParam,
-                 delta: DecayParam,
+                 gamma, epsilon: ParamScheduler,
+                 delta: ParamScheduler,
                  alpha,
                  verbose=False):
         """The agent's main training routine.
@@ -241,8 +241,9 @@ class Agent:
                 self.reset_cell_states_for(self.actor, fin_env_ids)
 
             # Every X episodes, plot informative graphs
-            if i % PLOT_PERIOD == 0:
+            if i % PLOT_SAVE_STATS_PERIOD == 0:
                 self.stats.plot_stats(self.out_path)
+                self.stats.save(self.out_path)
 
             # If environment has test levels, test on it
             if i % TEST_PERIOD == 0 and self.env.has_test_levels():
@@ -661,8 +662,7 @@ class Agent:
         stem_config = self.stem_network.get_config()
         q_config = self.q_network.get_config()
         # lr_config = self.learning_rate.get_config()
-        agent_config = {"num_parallel_envs": self.num_par_envs,
-                        "replay_batch_size": self.replay_batch_size,
+        agent_config = {"replay_batch_size": self.replay_batch_size,
                         "sequence_shift": self.memory.sequence_shift,
                         "use_double": self.double,
                         "obs_buf_size": self.obs_buf_size,
@@ -674,6 +674,7 @@ class Agent:
                   "stem_model_config": stem_config,
                   "q_network_class": self.q_network.__class__.__name__,
                   "q_network_config": q_config,
+                  "env_config": self.env.get_config(),
                   # "lr_config": lr_config,
                   "agent_config": agent_config}
 
@@ -695,9 +696,7 @@ class Agent:
 
         self.online_learner.save_weights(model_path, overwrite=overwrite)
 
-        self.stats.save(self.out_path)
-
-        print("Saved model and statistics.")
+        print("Saved model.")
 
     def restore(self, model_name, checkpoint_no=None):
         """Restores model weights and statistics."""
@@ -813,18 +812,20 @@ def compute_target_returns(pred_returns, pred_next_returns, rewards, gamma, delt
     return target_returns, td_errs
 
 
-def load_model(model_name, env, checkpoint_no=None):
-    in_path = "out/" + env.NAME + "/" + model_name + "/config.json"
+def load_model(model_name, env_type, checkpoint_no=None):
+    in_path = "out/" + env_type.NAME + "/" + model_name + "/config.json"
     config = json2config(in_path)
 
     stem_class = eval(config["stem_model_class"])
     stem_config = config["stem_model_config"]
     q_class = eval(config["q_network_class"])
     q_config = config["q_network_config"]
+    env_config = config["env_config"]
     agent_config = config["agent_config"]
 
     stem_net = stem_class(**stem_config)
     q_net = q_class(**q_config)
+    env = env_type(**env_config)
 
     agent = Agent(env=env, stem_network=stem_net, q_network=q_net,
                   name="tmp", override=True, **agent_config)
@@ -832,15 +833,15 @@ def load_model(model_name, env, checkpoint_no=None):
     return agent
 
 
-def load_and_play(model_name, env, checkpoint_no=None, mode=None):
-    agent = load_model(model_name, env, checkpoint_no)
+def load_and_play(model_name, env_type, checkpoint_no=None, mode=None):
+    agent = load_model(model_name, env_type, checkpoint_no)
     if mode is not None:
         agent.env.set_mode(mode)
     agent.just_play(verbose=True)
 
 
-def load_and_test(model_name, env, checkpoint_no=None, mode=None, render=False):
-    agent = load_model(model_name, env, checkpoint_no)
+def load_and_test(model_name, env_type, checkpoint_no=None, mode=None, render=False):
+    agent = load_model(model_name, env_type, checkpoint_no)
     if mode is not None:
         agent.env.set_mode(mode)
     agent.test_on_levels(render)

@@ -108,11 +108,13 @@ class Snake(ParallelEnvironment):
         self.compute_fields()
 
     def spawn_fruit(self, ids):
-        self.fruit_fields[ids] = False
+        # self.fruit_fields[ids] = False
         # for idx in ids:
         #     valid_spawn_coords = self.coordinates[~ self.snake_body_fields[idx]]
-        #     spawn_coords = np.random.choice(valid_spawn_coords)
-        #     self.fruit_fields[idx, spawn_coords[0], spawn_coords[1]] = True  # TODO: Test
+        #     spawn_field_id = np.random.randint(0, len(valid_spawn_coords))
+        #     spawn_coords = valid_spawn_coords[spawn_field_id]
+        #     self.fruit_locations[idx] = spawn_coords
+        #     self.fruit_fields[idx, spawn_coords[0], spawn_coords[1]] = True
 
         self.fruit_locations[ids] = np.random.randint(low=(0, 0), high=(self.height, self.width), size=(len(ids), 2))
         self.fruit_fields[ids] = False
@@ -220,11 +222,12 @@ class Snake(ParallelEnvironment):
         image_state_shape = (self.height, self.width, 3)
         numerical_state_shape = 5
         return [image_state_shape, numerical_state_shape]
-    
+
     def get_config(self):
-        config = {"height": self.height,
-                  "width": self.width}
-        return super(Snake, self).get_config().update(config)
+        config = super(Snake, self).get_config()
+        config.update({"height": self.height,
+                       "width": self.width})
+        return config
 
     def __init_gui(self):
         pygame.init()
@@ -270,7 +273,8 @@ class Snake(ParallelEnvironment):
         # Snake head
         (head_y, head_x) = self.snake_head_locations[0]
         pygame.draw.rect(self.screen, STYLE['snake_color'],
-                         [scr_marg_left + head_x * FIELD_SZ, scr_marg_top + head_y * FIELD_SZ, FIELD_SZ - 2, FIELD_SZ - 2])
+                         [scr_marg_left + head_x * FIELD_SZ, scr_marg_top + head_y * FIELD_SZ, FIELD_SZ - 2,
+                          FIELD_SZ - 2])
 
         # Fruit
         fruit_coords = self.fruit_locations[0]
@@ -333,7 +337,7 @@ class Snake(ParallelEnvironment):
         descriptions = np.array(["up", "right", "down", "left"])
         orientation = descriptions[np.array(state[0:4], dtype='bool')][0]
         text = "- head orientation: %s\n" % orientation + \
-            "- time since last fruit: %d" % state[4]
+               "- time since last fruit: %d" % state[4]
         return text
 
 

@@ -34,9 +34,9 @@ class Statistics:
 
     # Other constants
     WINDOW_SIZES_EPISODES = (500, 2000, 10000)
-    WINDOW_SIZES_TRANSITIONS = (500000, 5000000, 20000000)
+    WINDOW_SIZES_TRANSITIONS = (50000, 200000, 1000000)
     WINDOW_SIZES_CYCLES = (10, 50, 200)
-    WINDOW_SIZES_HOURS = (0.1, 0.5, 2)
+    WINDOW_SIZES_HOURS = (0.05, 0.25, 1)
     EXTREME_LOSS_FACTOR = 1000
 
     def __init__(self, env_type: Environment = None, env: Environment = None,
@@ -395,16 +395,20 @@ class Statistics:
             self.plot_priorities(out_path)
 
     def plot_scores(self, out_path):
+        transitions = self.get_episode_transitions()
         final_scores = self.get_scores()
+        x_values, y_values, step_size = interpolate(transitions, final_scores)
+        window_sizes = (np.array(self.WINDOW_SIZES_TRANSITIONS) / step_size).astype("int")
         if len(final_scores) > 0:
-            plot_moving_average(final_scores,
+            plot_moving_average(x_values=x_values,
+                                y_values=y_values,
                                 title="Score history",
-                                x_label="Episode",
+                                x_label="Transition",
                                 y_label="Score",
-                                window_sizes=self.WINDOW_SIZES_EPISODES,
+                                window_sizes=window_sizes,
                                 out_path=out_path + "scores.png",
                                 show=True)
-            plt.plot(self.get_score_records())
+            plt.plot(transitions, self.get_score_records())
             plot(title="Score records",
                  x_label="Episode",
                  y_label="Score",
@@ -505,6 +509,8 @@ def get_moving_avg_lst(values, n):
     is padded at the beginning."""
     if len(values) < n:
         return []
+    if n == 0:
+        return values
     mov_avg = np.cumsum(values, dtype=float)
     mov_avg[n:] = mov_avg[n:] - mov_avg[:-n]
     mov_avg = mov_avg[n - 1:] / n
@@ -512,10 +518,11 @@ def get_moving_avg_lst(values, n):
     return mov_avg
 
 
-def plot_moving_average(values, window_sizes, validation_values=None, validation_period=None, **kwargs):
-    add_moving_avg_plot(values, window_sizes[0], color='silver')
-    add_moving_avg_plot(values, window_sizes[1], color='black')
-    add_moving_avg_plot(values, window_sizes[2], color='#009d81')
+def plot_moving_average(y_values, window_sizes, x_values=None, validation_values=None, validation_period=None,
+                        **kwargs):
+    add_moving_avg_plot(x_values=x_values, y_values=y_values, window_size=window_sizes[0], color='silver')
+    add_moving_avg_plot(x_values=x_values, y_values=y_values, window_size=window_sizes[1], color='black')
+    add_moving_avg_plot(x_values=x_values, y_values=y_values, window_size=window_sizes[2], color='#009d81')
 
     if validation_values is not None and validation_period is not None:
         add_validation_plot(validation_values, validation_period)
@@ -682,7 +689,7 @@ def compare_times(ma_window_size, **kwargs):
                               logarithmic=True,
                               **kwargs)
     plot_comparison_on_domain(name="time_records",
-                              getter_handle=Statistics.get_score_records,
+                              getter_handle=Statistics.get_time_records,
                               orig_domain="episodes",
                               title="Time records comparison",
                               y_label="Episode length",
@@ -712,6 +719,7 @@ def compare_losses(**kwargs):
 
 
 def compare_learning_rates(**kwargs):
+    kwargs.update({"ma_window_size": None})
     plot_comparison_on_domain(name="learning-rates",
                               getter_handle=Statistics.get_learning_rates,
                               orig_domain="cycles",

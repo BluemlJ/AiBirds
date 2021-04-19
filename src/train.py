@@ -5,7 +5,7 @@ from src.utils.utils import setup_hardware, set_seed
 
 # Meta
 setup_hardware(use_gpu=True, gpu_memory_limit=4096)
-seed = 486217935
+seed = 735249652
 set_seed(seed)
 
 # General parameters
@@ -13,13 +13,14 @@ env = Snake(num_par_inst=500)
 
 # Training and synchronization
 replay_period = 64
-replay_size_multiplier = 2  # multiplier of 4 means that, per replay on average, 25 % of data is unseen.
+replay_size_multiplier = 4  # multiplier of 4 means that, per replay on average, 25 % of data is unseen.
 replay_epochs = 1
 replay_batch_size = 1024
 target_sync_period = 128
 actor_sync_period = replay_period
-learning_rate = DecayParam(init_value=0.0004, decay_mode="exp", half_life_period=4000000, warmup_transitions=0)
-delta = DecayParam(init_value=0)
+learning_rate = ParamScheduler(init_value=0.0005, decay_mode="step", milestones=[5000000, 100000000],
+                               milestone_factor=0.4)
+delta = ParamScheduler(init_value=0)
 
 # Model with recurrence
 sequence_len = 20
@@ -36,18 +37,18 @@ latent_a_dim = 64  # dimension of advantage part of q-network
 q_network = comp.q_network.DoubleQNetwork(latent_v_dim, latent_a_dim)
 
 # Policy
-epsilon = DecayParam(init_value=1, decay_mode="exp", half_life_period=700000)
+epsilon = ParamScheduler(init_value=0, decay_mode="exp", half_life_period=600000)
 
 # Miscellaneous
 obs_buf_size = 2000  # number of transitions that can fit into the observations buffer per env, = max episode length +1
 exp_buf_size = 4000000  # total number of transitions that can fit into the agent's replay memory
 
-# load_and_play("frank", Snake, checkpoint_no=42842)
+# load_and_play("fruit_spawning", Snake)
 
 agent = Agent(env=env,
               stem_network=stem_model,
               q_network=q_network,
-              name="smaller_replay_no_prio",
+              name="step_lr_prioritized",
               replay_batch_size=replay_batch_size,
               sequence_shift=10,
               eta=eta,
@@ -56,7 +57,7 @@ agent = Agent(env=env,
               mem_size=exp_buf_size,
               use_pretrained=False,
               seed=seed)
-# agent.restore("lstm")
+# agent.restore("step_lr_v1")
 
 agent.practice(num_parallel_steps=1000000,
                replay_period=replay_period,
@@ -68,7 +69,7 @@ agent.practice(num_parallel_steps=1000000,
                gamma=0.999,
                epsilon=epsilon,
                delta=delta,
-               alpha=0,
+               alpha=0.7,
                verbose=False)
 
 '''print("\nTerminals:")
