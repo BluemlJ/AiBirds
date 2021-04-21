@@ -9,9 +9,11 @@ from src.utils.utils import orange, yellow, red, bold, plot, user_agrees_to, sec
 from src.envs.env import Environment
 from src.utils.logger import Logger
 from src.utils.mem import ReplayMemory
+from skimage.measure import block_reduce
 
 # For comparison plots
 PLOT_STEP_NO = 10000
+DEFAULT_COLORS = plt.rcParams['axes.prop_cycle'].by_key()['color']
 
 
 class Statistics:
@@ -33,10 +35,8 @@ class Statistics:
     LEARNING_RATE = 3
 
     # Other constants
-    WINDOW_SIZES_EPISODES = (500, 2000, 10000)
-    WINDOW_SIZES_TRANSITIONS = (50000, 200000, 1000000)
-    WINDOW_SIZES_CYCLES = (10, 50, 200)
-    WINDOW_SIZES_HOURS = (0.05, 0.25, 1)
+    WINDOW_SIZE_EPISODES = 500
+    WINDOW_SIZE_CYCLES = 10
     EXTREME_LOSS_FACTOR = 1000
 
     def __init__(self, env_type: Environment = None, env: Environment = None,
@@ -46,7 +46,7 @@ class Statistics:
         self.env = env
         self.memory = memory
         if log_path is not None:
-            self.logger = Logger(log_path, self.EXTREME_LOSS_FACTOR, self.WINDOW_SIZES_CYCLES[0])
+            self.logger = Logger(log_path, self.EXTREME_LOSS_FACTOR, self.WINDOW_SIZE_CYCLES)
         else:
             self.logger = None
 
@@ -329,8 +329,8 @@ class Statistics:
         comp_time = time.time() - self.computation_timer
         total_time = time.time() - self.total_timer
 
-        ma_episode_size = self.WINDOW_SIZES_EPISODES[0]
-        ma_cycle_size = self.WINDOW_SIZES_CYCLES[0]
+        ma_episode_size = self.WINDOW_SIZE_EPISODES
+        ma_cycle_size = self.WINDOW_SIZE_CYCLES
 
         # avg_return = get_moving_avg(self.get_final_returns(), ma_episode_size)
         ma_score = get_moving_avg_val(self.get_scores(), ma_episode_size)
@@ -383,30 +383,27 @@ class Statistics:
         self.computation_timer = time.time()
 
     def plot_stats(self, out_path):
-        if self.get_num_episodes() >= self.WINDOW_SIZES_EPISODES[0] and \
-                self.get_num_cycles() >= self.WINDOW_SIZES_CYCLES[0]:
-            self.plot_scores(out_path)
-            self.plot_returns(out_path)
-            self.plot_times(out_path)
-            if self.env_type.WINS_RELEVANT:
-                self.plot_wins(out_path)
-            self.plot_learning_rates(out_path)
-            self.plot_loss(out_path)
-            self.plot_priorities(out_path)
+        self.plot_scores(out_path)
+        self.plot_returns(out_path)
+        self.plot_times(out_path)
+        if self.env_type.WINS_RELEVANT:
+            self.plot_wins(out_path)
+        self.plot_learning_rates(out_path)
+        self.plot_loss(out_path)
+        self.plot_priorities(out_path)
 
     def plot_scores(self, out_path):
         transitions = self.get_episode_transitions()
         final_scores = self.get_scores()
-        x_values, y_values, step_size = interpolate(transitions, final_scores)
-        window_sizes = (np.array(self.WINDOW_SIZES_TRANSITIONS) / step_size).astype("int")
         if len(final_scores) > 0:
-            plot_moving_average(x_values=x_values,
-                                y_values=y_values,
+            plot_moving_average(x=transitions,
+                                y=final_scores,
                                 title="Score history",
                                 x_label="Transition",
                                 y_label="Score",
-                                window_sizes=window_sizes,
                                 out_path=out_path + "scores.png",
+                                interp=True,
+                                plot_variance=True,
                                 show=True)
             plt.plot(transitions, self.get_score_records())
             plot(title="Score records",
@@ -421,7 +418,6 @@ class Statistics:
                                 title="Return history",
                                 x_label="Episode",
                                 y_label="Return",
-                                window_sizes=self.WINDOW_SIZES_EPISODES,
                                 out_path=out_path + "returns.png")
             plt.plot(self.get_return_records())
             plot(title="Return records",
@@ -435,7 +431,6 @@ class Statistics:
                                 title="Episode length history",
                                 x_label="Episode",
                                 y_label="Time",
-                                window_sizes=self.WINDOW_SIZES_EPISODES,
                                 out_path=out_path + "times.png")
             plt.plot(self.get_time_records())
             plot(title="Episode length records",
@@ -448,7 +443,6 @@ class Statistics:
                             title="Win-Raio",
                             x_label="Episode",
                             y_label="Win proportion",
-                            window_sizes=self.WINDOW_SIZES_EPISODES,
                             out_path=out_path + "wins.png")
 
     def plot_learning_rates(self, out_path):
@@ -462,13 +456,11 @@ class Statistics:
                  logarithmic=False)
 
     def plot_loss(self, out_path):
-        if self.get_num_cycles() > self.WINDOW_SIZES_CYCLES[0]:
-            plot_moving_average(self.get_losses(),
-                                title="Training loss history",
-                                window_sizes=self.WINDOW_SIZES_CYCLES,
-                                x_label="Train cycle", y_label="Loss",
-                                out_path=out_path + "loss.png",
-                                logarithmic=True)
+        plot_moving_average(self.get_losses(),
+                            title="Training loss history",
+                            x_label="Train cycle", y_label="Loss",
+                            out_path=out_path + "loss.png",
+                            logarithmic=True)
 
     def plot_priorities(self, out_path):
         if self.memory is not None:
@@ -481,7 +473,7 @@ class Statistics:
     def log_extreme_losses(self, individual_losses, trans_ids, predictions, targets, env):
         if self.logger is None:
             return
-        moving_avg_loss = get_moving_avg_val(self.get_losses(), self.WINDOW_SIZES_CYCLES[0])
+        moving_avg_loss = get_moving_avg_val(self.get_losses(), self.WINDOW_SIZE_CYCLES)
         if moving_avg_loss > 0:
             extreme_loss = individual_losses > (moving_avg_loss * self.EXTREME_LOSS_FACTOR)
             if np.any(extreme_loss):
@@ -506,51 +498,110 @@ def get_moving_avg_val(values, window_size):
 
 def get_moving_avg_lst(values, n):
     """Computes the moving average with window size n of a list of numbers. The output list
-    is padded at the beginning."""
+    is padded with NaN at the beginning and at the end to maintain length."""
     if len(values) < n:
-        return []
+        return np.array([])
     if n == 0:
         return values
-    mov_avg = np.cumsum(values, dtype=float)
-    mov_avg[n:] = mov_avg[n:] - mov_avg[:-n]
-    mov_avg = mov_avg[n - 1:] / n
-    mov_avg = np.insert(mov_avg, 0, int(n / 2) * [None])
+
+    a = np.cumsum(values, dtype=float)
+    a[n:] = a[n:] - a[:-n]
+    a = a[n - 1:] / n
+    mov_avg = np.empty(len(values))
+    mov_avg[:] = np.nan
+    mov_avg[n // 2:n // 2 + len(a)] = a
     return mov_avg
 
 
-def plot_moving_average(y_values, window_sizes, x_values=None, validation_values=None, validation_period=None,
-                        **kwargs):
-    add_moving_avg_plot(x_values=x_values, y_values=y_values, window_size=window_sizes[0], color='silver')
-    add_moving_avg_plot(x_values=x_values, y_values=y_values, window_size=window_sizes[1], color='black')
-    add_moving_avg_plot(x_values=x_values, y_values=y_values, window_size=window_sizes[2], color='#009d81')
+def get_bound(x, y, n, bound="upper"):
+    if len(y) < n:
+        return np.array([]), np.array([])
+    if n == 0:
+        return x, y
+
+    # Ensure lengths of x and y are divisible by n
+    overhang = len(y) % n
+    if overhang:
+        y = y[:-overhang]
+        x = x[:-overhang]
+
+    if bound == "upper":
+        y = block_reduce(y, (n,), np.max)
+    else:
+        y = block_reduce(y, (n,), np.min)
+
+    x = block_reduce(x, (n,), np.average)
+    return x, y
+
+
+def plot_moving_average(y, y_label, x=None, interp=False, plot_variance=False,
+                        validation_values=None, validation_period=None, **kwargs):
+    ma_ws = add_charts(x_lsts=[x], y_lsts=[y], mov_avg=True, interp=interp, plot_variance=plot_variance)
+    if ma_ws is not None:
+        y_label += " (%s MA)" % num2text(ma_ws)
 
     if validation_values is not None and validation_period is not None:
         add_validation_plot(validation_values, validation_period)
 
-    plot(legend=True, **kwargs)
+    plot(y_label=y_label, **kwargs)
 
 
-def add_moving_avg_plot(y_values, window_size, x_values=None, color=None, label=None, secs2hours=False,
-                        zero2nan=False):
-    if label is None:
-        label = "Moving average %d" % window_size
+def add_charts(y_lsts, x_lsts=None, colors=None, labels=None, mov_avg=False,
+               zero2nan=False, interp=False, plot_variance=False):
+    """Adds one or multiple line chart(s) to an existing plot. Optionally converts into
+    moving average (MA) if mov_avg=True. Automatically determines suitable MA windows size.
+    Returns the used MA window size."""
+    assert not interp or x_lsts is not None
+    assert not plot_variance or mov_avg
 
-    if len(y_values) > window_size:
-        y_values_ma = get_moving_avg_lst(y_values, window_size)
-        if x_values is None:
-            x_values = range(len(y_values_ma))
+    if interp:
+        max_len = PLOT_STEP_NO
+        max_x = np.max([x[-1] for x in x_lsts])
+        step_size = max_x / max_len
+    else:
+        step_size = 1
+        interp = False
+        max_len = np.max([len(y) for y in y_lsts])
+
+    ma_ws = max_len // 40
+
+    for i, y in enumerate(y_lsts):
+        if interp:
+            x, y = interpolate(x_lsts[i], y, step_size)
         else:
-            x_values = x_values[:len(y_values_ma)]
+            x = None
 
-        if secs2hours:
-            x_values = x_values / 3600
+        label = labels[i] if labels is not None else None
+        color = colors[i] if colors is not None else DEFAULT_COLORS[i]
 
-        if zero2nan:
-            y_values_ma[y_values_ma <= 0] = np.nan
+        if mov_avg:
+            y_ma = get_moving_avg_lst(y, ma_ws)
 
-        plt.plot(x_values, y_values_ma, label=label, c=color)
-    elif label is not None:
-        add_empty_plot(label=label)
+            if len(y_ma) == 0 and label is not None:
+                add_empty_plot(label=label)
+
+            if x is None:
+                x = np.arange(len(y_ma))
+
+            if zero2nan:
+                y_ma[y_ma <= 0] = np.nan
+
+            plt.plot(x, y_ma, label=label, color=color)
+
+            if plot_variance:
+                _, y_up = get_bound(x, y, ma_ws, "upper")
+                x_bounds, y_lo = get_bound(x, y, ma_ws, "lower")
+                plt.fill_between(x_bounds, y_lo, y_up, color=color, alpha=0.4)
+        else:
+            if x is not None:
+                plt.plot(x, y, label=label, color=color)
+            else:
+                plt.plot(y, label=label, color=color)
+
+    if mov_avg:
+        return ma_ws * step_size
+    else:
+        return None
 
 
 def add_empty_plot(label):
@@ -558,7 +609,8 @@ def add_empty_plot(label):
 
 
 def compare_statistics(model_names, env_type, labels=None,
-                       cut_at_episode=None, cut_at_cycle=None, cut_at_transition=None, cut_at_hour=None):
+                       cut_at_episode=None, cut_at_cycle=None, cut_at_transition=None, cut_at_hour=None,
+                       plot_variance=False):
     """Takes a list of model names, retrieves their statistics and plots them."""
     base_path = "out/%s/" % env_type.NAME
 
@@ -585,23 +637,18 @@ def compare_statistics(model_names, env_type, labels=None,
 
     out_path = "out/comparison_plots/"
 
-    s = Statistics(env_type)
     plot_everything(stats_collection=stats_collection,
                     labels=labels,
                     env_type=env_type,
-                    ma_ws_episodes=s.WINDOW_SIZES_EPISODES[1],
-                    ma_ws_transitions=s.WINDOW_SIZES_TRANSITIONS[1],
-                    ma_ws_cycles=s.WINDOW_SIZES_CYCLES[1],
-                    ma_ws_hours=s.WINDOW_SIZES_HOURS[1],
                     out_path=out_path,
                     cut_at_episode=cut_at_episode,
                     cut_at_cycle=cut_at_cycle,
                     cut_at_transition=cut_at_transition,
-                    cut_at_hour=cut_at_hour)
+                    cut_at_hour=cut_at_hour,
+                    plot_variance=plot_variance)
 
 
-def plot_everything(out_path, env_type: Environment, ma_ws_episodes, ma_ws_transitions,
-                    ma_ws_cycles, ma_ws_hours, **kwargs):
+def plot_everything(out_path, env_type: Environment,  **kwargs):
     # (Re-)create output folder
     if os.path.exists(out_path):
         shutil.rmtree(out_path)
@@ -609,14 +656,12 @@ def plot_everything(out_path, env_type: Environment, ma_ws_episodes, ma_ws_trans
 
     # Episode stats
     ep_plot_params = zip(["episodes", "transitions", "wall-clock_time"],
-                         ["Episode", "Transition", "Wall-clock time (h)"],
-                         [ma_ws_episodes, ma_ws_transitions, ma_ws_hours])
-    for domain, x_label, ma_window_size in ep_plot_params:
+                         ["Episode", "Transition", "Wall-clock time (h)"])
+    for domain, x_label in ep_plot_params:
         sub_out_path = out_path + domain + "/"
         os.mkdir(sub_out_path)
         kwargs.update({"domain": domain,
                        "x_label": x_label,
-                       "ma_window_size": ma_window_size,
                        "out_path": sub_out_path})
         compare_returns(**kwargs)
         compare_scores(**kwargs)
@@ -627,27 +672,25 @@ def plot_everything(out_path, env_type: Environment, ma_ws_episodes, ma_ws_trans
 
     # Cycle stats
     cyc_plot_params = zip(["cycles", "transitions", "wall-clock_time"],
-                          ["Cycle", "Transition", "Wall-clock time (h)"],
-                          [ma_ws_cycles, ma_ws_transitions, ma_ws_hours])
-    for domain, x_label, ma_window_size in cyc_plot_params:
+                          ["Cycle", "Transition", "Wall-clock time (h)"])
+    for domain, x_label in cyc_plot_params:
         sub_out_path = out_path + domain + "/"
         if not os.path.exists(sub_out_path):
             os.mkdir(sub_out_path)
         kwargs.update({"domain": domain,
                        "x_label": x_label,
-                       "ma_window_size": ma_window_size,
                        "out_path": sub_out_path})
         compare_losses(**kwargs)
         compare_learning_rates(**kwargs)
 
 
-def compare_returns(ma_window_size, **kwargs):
+def compare_returns(**kwargs):
     plot_comparison_on_domain(name="returns",
                               getter_handle=Statistics.get_returns,
                               orig_domain="episodes",
                               title="Return history comparison",
                               y_label="Return",
-                              ma_window_size=ma_window_size,
+                              mov_avg=True,
                               logarithmic=False,
                               **kwargs)
     plot_comparison_on_domain(name="return_records",
@@ -655,18 +698,18 @@ def compare_returns(ma_window_size, **kwargs):
                               orig_domain="episodes",
                               title="Return records comparison",
                               y_label="Return",
-                              ma_window_size=None,
+                              mov_avg=False,
                               logarithmic=False,
                               **kwargs)
 
 
-def compare_scores(ma_window_size, **kwargs):
+def compare_scores(**kwargs):
     plot_comparison_on_domain(name="scores",
                               getter_handle=Statistics.get_scores,
                               orig_domain="episodes",
                               title="Score history comparison",
                               y_label="Score",
-                              ma_window_size=ma_window_size,
+                              mov_avg=True,
                               logarithmic=True,
                               **kwargs)
     plot_comparison_on_domain(name="score_records",
@@ -674,18 +717,18 @@ def compare_scores(ma_window_size, **kwargs):
                               orig_domain="episodes",
                               title="Score records comparison",
                               y_label="Score",
-                              ma_window_size=None,
+                              mov_avg=False,
                               logarithmic=True,
                               **kwargs)
 
 
-def compare_times(ma_window_size, **kwargs):
+def compare_times(**kwargs):
     plot_comparison_on_domain(name="times",
                               getter_handle=Statistics.get_times,
                               orig_domain="episodes",
                               title="Time history comparison",
                               y_label="Episode length",
-                              ma_window_size=ma_window_size,
+                              mov_avg=True,
                               logarithmic=True,
                               **kwargs)
     plot_comparison_on_domain(name="time_records",
@@ -693,7 +736,7 @@ def compare_times(ma_window_size, **kwargs):
                               orig_domain="episodes",
                               title="Time records comparison",
                               y_label="Episode length",
-                              ma_window_size=None,
+                              mov_avg=False,
                               logarithmic=True,
                               **kwargs)
 
@@ -704,6 +747,7 @@ def compare_wins(**kwargs):
                               orig_domain="episodes",
                               title="Win-ratio history comparison",
                               y_label="Win proportion",
+                              mov_avg=True,
                               logarithmic=False,
                               **kwargs)
 
@@ -714,23 +758,24 @@ def compare_losses(**kwargs):
                               orig_domain="cycles",
                               title="Loss history comparison",
                               y_label="Loss",
+                              mov_avg=True,
                               logarithmic=True,
                               **kwargs)
 
 
 def compare_learning_rates(**kwargs):
-    kwargs.update({"ma_window_size": None})
     plot_comparison_on_domain(name="learning-rates",
                               getter_handle=Statistics.get_learning_rates,
                               orig_domain="cycles",
                               title="Learning rate history comparison",
                               y_label="Learning rate",
+                              mov_avg=False,
                               logarithmic=False,
                               **kwargs)
 
 
 def plot_comparison_on_domain(name, stats_collection, labels, getter_handle, domain, orig_domain, title,
-                              x_label, y_label, ma_window_size, out_path, logarithmic, **kwargs):
+                              mov_avg, x_label, y_label, out_path, logarithmic, plot_variance, **kwargs):
     if orig_domain == "episodes":
         get_domain = get_episodes_domain
     elif orig_domain == "cycles":
@@ -738,46 +783,18 @@ def plot_comparison_on_domain(name, stats_collection, labels, getter_handle, dom
     else:
         raise ValueError("Invalid original domain given.")
 
-    if ma_window_size is not None:
-        y_label += " (%s MA)" % num2text(ma_window_size)
+    x_lsts, y_lsts = [], []
+    for stats in stats_collection:
+        x = get_domain(stats, domain)
+        y = getter_handle(stats)
+        x, y = cut_data(x, y, domain, **kwargs)
+        x_lsts += [x]
+        y_lsts += [y]
 
-    for stats, label in zip(stats_collection, labels):
-        x_values = get_domain(stats, domain)
-        y_values = getter_handle(stats)
-        x_values, y_values = cut_data(x_values, y_values, domain, **kwargs)
-
-        if np.all(x_values == 0):
-            add_empty_plot(label=label)
-            continue
-
-        if x_values is not None and ma_window_size is not None and domain == "wall-clock_time":
-            ma_ws = int(ma_window_size * 3600)
-        else:
-            ma_ws = ma_window_size
-
-        if x_values is not None and not np.all(x_values == 0) \
-                and domain != orig_domain and ma_ws is not None:
-            x_values, y_values, step_size = interpolate(x_values, y_values)
-            ma_ws = int(ma_ws / step_size)
-
-        if ma_ws is not None:
-            if ma_ws == 0:
-                add_empty_plot(label=label)
-                continue
-            add_moving_avg_plot(x_values=x_values, y_values=y_values,
-                                window_size=ma_ws, label=label, secs2hours=domain == "wall-clock_time",
-                                zero2nan=logarithmic)
-        else:
-            if logarithmic:
-                y_values = y_values.astype("float32")
-                y_values[y_values <= 0] = np.nan
-
-            if x_values is not None:
-                if domain == "wall-clock_time":
-                    x_values = x_values / 3600
-                plt.plot(x_values, y_values, label=label)
-            else:
-                plt.plot(y_values, label=label)
+    ma_ws = add_charts(x_lsts=x_lsts, y_lsts=y_lsts, labels=labels, mov_avg=mov_avg, zero2nan=logarithmic,
+                       interp=domain != orig_domain, plot_variance=plot_variance)
+    if ma_ws is not None:
+        y_label += " (%s MA)" % num2text(ma_ws)
 
     keep = logarithmic
     time_domain = domain == "wall-clock_time"
@@ -788,11 +805,10 @@ def plot_comparison_on_domain(name, stats_collection, labels, getter_handle, dom
              legend=True, logarithmic=True, time_domain=time_domain, keep=False)
 
 
-def interpolate(x, y):
-    step_size = x[-1] / PLOT_STEP_NO
+def interpolate(x, y, step_size):
     x_eval = np.arange(start=x[0], stop=x[-1], step=step_size)
     y_interp = np.interp(x_eval, x, y, left=np.nan, right=np.nan)
-    return x_eval, y_interp, step_size
+    return x_eval, y_interp
 
 
 def cut_data(x_values, y_values, domain,
@@ -808,7 +824,7 @@ def cut_data(x_values, y_values, domain,
     elif domain == "transitions" and cut_at_transition is not None:
         x_values, y_values = cut_too_late(x_values, y_values, cut_at_transition)
     elif domain == "wall-clock_time" and cut_at_hour is not None:
-        x_values, y_values = cut_too_late(x_values, y_values, int(cut_at_hour * 3600))
+        x_values, y_values = cut_too_late(x_values, y_values, int(cut_at_hour))
     return x_values, y_values
 
 
@@ -827,7 +843,7 @@ def get_episodes_domain(stats, domain):
     elif domain == "transitions":
         return stats.get_episode_transitions()
     elif domain == "wall-clock_time":
-        return stats.get_episode_seconds()
+        return stats.get_episode_hours()
     else:
         raise ValueError("Invalid domain name provided.")
 
@@ -838,26 +854,9 @@ def get_cycles_domain(stats, domain):
     elif domain == "transitions":
         return stats.get_cycle_transitions()
     elif domain == "wall-clock_time":
-        return stats.get_cycle_seconds()
+        return stats.get_cycle_hours()
     else:
         raise ValueError("Invalid domain name provided.")
-
-
-def plot_comparison(out_path, y_values, labels, title, y_label, x_values=None, window_size=None,
-                    x_label="Episode", logarithmic=False):
-    if x_values is None:
-        x_values = len(y_values) * [None]
-
-    if window_size is not None:
-        for x, y, label in zip(x_values, y_values, labels):
-            add_moving_avg_plot(y, window_size, x_values=x, label=label)
-    else:
-        for x, y, label in zip(x_values, y_values, labels):
-            if x is None:
-                x = range(len(y))
-                plt.plot(x, y, label=label)
-
-    plot(title, x_label, y_label, out_path, True, logarithmic)
 
 
 def add_validation_plot(validation_values, validation_period):

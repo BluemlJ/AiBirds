@@ -108,17 +108,17 @@ class Snake(ParallelEnvironment):
         self.compute_fields()
 
     def spawn_fruit(self, ids):
-        # self.fruit_fields[ids] = False
-        # for idx in ids:
-        #     valid_spawn_coords = self.coordinates[~ self.snake_body_fields[idx]]
-        #     spawn_field_id = np.random.randint(0, len(valid_spawn_coords))
-        #     spawn_coords = valid_spawn_coords[spawn_field_id]
-        #     self.fruit_locations[idx] = spawn_coords
-        #     self.fruit_fields[idx, spawn_coords[0], spawn_coords[1]] = True
-
-        self.fruit_locations[ids] = np.random.randint(low=(0, 0), high=(self.height, self.width), size=(len(ids), 2))
         self.fruit_fields[ids] = False
-        self.fruit_fields[ids, self.fruit_locations[ids, 0], self.fruit_locations[ids, 1]] = True
+        for idx in ids:
+            valid_spawn_coords = self.coordinates[~ self.snake_body_fields[idx]]
+            spawn_field_id = np.random.randint(0, len(valid_spawn_coords))
+            spawn_coords = valid_spawn_coords[spawn_field_id]
+            self.fruit_locations[idx] = spawn_coords
+            self.fruit_fields[idx, spawn_coords[0], spawn_coords[1]] = True
+
+        # self.fruit_locations[ids] = np.random.randint(low=(0, 0), high=(self.height, self.width), size=(len(ids), 2))
+        # self.fruit_fields[ids] = False
+        # self.fruit_fields[ids, self.fruit_locations[ids, 0], self.fruit_locations[ids, 1]] = True
 
     def step(self, actions):
         # Update the env

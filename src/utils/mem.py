@@ -3,7 +3,7 @@ from src.utils.utils import del_first, print_error, yellow, orange
 
 
 class ReplayMemory:
-    def __init__(self, memory_size, state_shape, hidden_state_shape=None,
+    def __init__(self, memory_size, state_shape, n_step, hidden_state_shape=None,
                  sequence_len=None, sequence_shift=None, eta=0.9):
         """A finite buffer for saving and sampling transitions.
 
@@ -12,6 +12,8 @@ class ReplayMemory:
         """
 
         self.memory_size = memory_size
+        self.n_step = n_step
+
         self.stack_ptr = 0
         self.seq_ptr = 0
         self.state_shape_2d = state_shape[0]
@@ -175,12 +177,27 @@ class ReplayMemory:
             first_hidden_states = self.hidden_states[trans_ids[:, 0]]
         else:
             first_hidden_states = None
+
         actions = self.actions[trans_ids]
-        rewards = self.rewards[trans_ids]
         terminals = self.terminals[trans_ids]
 
-        next_trans_ids = np.copy(trans_ids)
-        next_trans_ids[~ terminals] += 1
+        # Obtain n-step rewards TODO: implement for sequential
+        step_axis = len(trans_ids.shape)
+        ids_repeated = np.repeat(np.expand_dims(trans_ids, axis=step_axis), self.n_step, axis=step_axis)
+        lookaheads = np.mgrid[0:len(trans_ids), 0:self.n_step][1]
+        n_step_trans_ids = ids_repeated + lookaheads
+        n_step_mask = n_step_trans_ids < self.stack_ptr
+        for step in range(1, self.n_step):
+            step_trans_ids = trans_ids + step - 1
+            step_trans_ids[step_trans_ids >= self.stack_ptr] = 0
+            n_step_mask[:, step] = n_step_mask[:, step-1] & ~ self.terminals[step_trans_ids]
+        n_step_trans_ids[~ n_step_mask] = 0
+
+        n_step_rewards = self.rewards[n_step_trans_ids]
+
+        next_trans_ids = np.copy(trans_ids) + self.n_step
+        next_trans_ids[next_trans_ids >= self.stack_ptr] = 0
+        # next_trans_ids[~ terminals] += self.n_step
         next_states_2d = self.states_2d[next_trans_ids]
         next_states_1d = self.states_1d[next_trans_ids]
         if mask is not None:
@@ -193,7 +210,8 @@ class ReplayMemory:
         else:
             last_hidden_states = None
 
-        return states, first_hidden_states, actions, rewards, next_states, last_hidden_states, terminals
+        return states, first_hidden_states, actions, n_step_rewards, n_step_mask, \
+               next_states, last_hidden_states, terminals
 
     def get_sequences(self, seq_ids):
         """Returns (zero-padded) sequences of transitions."""
@@ -299,6 +317,16 @@ class ReplayMemory:
 
     def get_state_shapes(self):
         return self.state_shape_2d, self.state_shape_1d
+
+    def get_config(self):
+        config = {"memory_size": self.memory_size,
+                  "state_shape": [self.state_shape_2d, self.state_shape_1d],
+                  "n_step": self.n_step,
+                  "hidden_state_shape": self.hidden_state_shape,
+                  "sequence_len": self.sequence_len,
+                  "sequence_shift": self.sequence_shift,
+                  "eta": self.eta}
+        return config
 
 
 def choice_by_priority(num_instances, priorities, alpha):

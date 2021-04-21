@@ -179,7 +179,9 @@ def del_first(lst, n):
 
 
 def num2text(num):
-    if num < 1000:
+    if num < 1:
+        return "%.2f" % num
+    elif num < 1000:
         return str(num)
     elif num < 1000000:
         num_rd = np.round(num / 1000)

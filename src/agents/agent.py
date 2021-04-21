@@ -22,7 +22,7 @@ class Agent:
     """Deep Q-Network (DQN) agent for playing Tetris, Snake or other games"""
 
     def __init__(self, env: ParallelEnvironment, stem_network: StemNetwork, q_network: QNetwork,
-                 name, replay_batch_size, sequence_shift=None, eta=0.9,
+                 name, replay_batch_size, n_step=1, sequence_shift=None, eta=0.9,
                  use_double=True, use_distributed=True,
                  obs_buf_size=100, mem_size=10000,
                  use_pretrained=False, override=False, seed=None):
@@ -84,6 +84,7 @@ class Agent:
         self.mem_size = mem_size
         self.memory = ReplayMemory(memory_size=self.mem_size,
                                    state_shape=self.state_shape,
+                                   n_step=n_step,
                                    hidden_state_shape=self.stem_network.get_hidden_state_shape(),
                                    sequence_len=self.sequence_len,
                                    sequence_shift=sequence_shift,
@@ -318,7 +319,7 @@ class Agent:
         exp_len = self.memory.get_length()
 
         # Get list of transitions
-        states, _, actions, rewards, next_states, _, terminals = \
+        states, _, actions, n_step_rewards, n_step_mask, next_states, _, terminals = \
             self.memory.get_transitions(trans_ids)
 
         # Obtain Monte Carlo return for each transition
@@ -333,8 +334,8 @@ class Agent:
         pred_next_returns = np.max(next_q_vals, axis=1)
 
         # Compute target_returns and temporal difference (TD) errors
-        target_returns, td_errs = compute_target_returns(pred_returns, pred_next_returns, rewards, gamma,
-                                                         delta, mc_returns, terminals)
+        target_returns, td_errs = compute_target_returns(pred_returns, pred_next_returns, n_step_rewards, n_step_mask,
+                                                         gamma, delta, mc_returns, terminals)
 
         # Update transition priorities according to TD errors
         self.memory.set_priorities(trans_ids, np.abs(td_errs))
@@ -661,8 +662,8 @@ class Agent:
         """Keep compatible with load_model()!"""
         stem_config = self.stem_network.get_config()
         q_config = self.q_network.get_config()
-        # lr_config = self.learning_rate.get_config()
         agent_config = {"replay_batch_size": self.replay_batch_size,
+                        "n_step": self.memory.n_step,
                         "sequence_shift": self.memory.sequence_shift,
                         "use_double": self.double,
                         "obs_buf_size": self.obs_buf_size,
@@ -675,7 +676,6 @@ class Agent:
                   "q_network_class": self.q_network.__class__.__name__,
                   "q_network_config": q_config,
                   "env_config": self.env.get_config(),
-                  # "lr_config": lr_config,
                   "agent_config": agent_config}
 
         return config
@@ -737,8 +737,7 @@ class Agent:
         pass
 
     def forget(self):
-        self.memory = ReplayMemory(memory_size=self.mem_size,
-                                   state_shape=self.state_shape)
+        self.memory = ReplayMemory(**self.memory.get_config())
 
     def print_transitions(self, ids):
         self.memory.print_trans_from(ids, self.env)
@@ -753,11 +752,11 @@ class Agent:
                "\nsync_period: %d" % (sync_period if self.double else -1) + \
                "\n\nalpha: %f" % alpha + \
                "\ngamma: %f" % gamma + \
+               "\nn_step: %d" % self.memory.n_step + \
                "\neta: %f" % self.memory.eta + \
                "\nobs_buf_size: %d" % self.obs_buf_size + \
-               "\nexp_buf_size: %d" % self.mem_size
-        if self.seed is not None:
-            text += "\nseed: %d" % self.seed
+               "\nexp_buf_size: %d" % self.mem_size + \
+               "\nseed: %d" % self.seed
 
         text += "\n\nSTEM MODEL PARAMETERS:"
         text += config2text(self.stem_network.get_config())
@@ -796,15 +795,26 @@ def compute_sample_weights(sample_priorities, sample_probabilities, total_size, 
     return np.abs(np.multiply(weights, sample_priorities))
 
 
-def compute_target_returns(pred_returns, pred_next_returns, rewards, gamma, delta, mc_returns, terminals):
-    # Compute one-step return
-    one_step_returns = rewards + gamma * pred_next_returns
+def compute_target_returns(pred_returns, pred_next_returns, n_step_rewards, n_step_mask,
+                           gamma, delta, mc_returns, terminals):
+    # Prepare
+    n = n_step_rewards.shape[-1]
+    step_axis = len(n_step_rewards.shape) - 1
+    final_step_mask = n_step_mask[:, -1] & ~ terminals
+    mask = np.append(n_step_mask, np.expand_dims(final_step_mask, axis=1), axis=step_axis)
+
+    # Compute n-step return
+    discounts = gamma ** np.arange(n + 1)
+    rewards_returns = np.append(n_step_rewards, np.expand_dims(pred_next_returns, axis=1), axis=step_axis)
+    rewards_returns_discounted = rewards_returns * discounts
+    rewards_returns_discounted[~ mask] = 0
+    n_step_returns = np.sum(rewards_returns_discounted, axis=step_axis)
 
     # Compute convex combination of MC return and one-step return
-    target_returns = delta * mc_returns + (1 - delta) * one_step_returns
+    target_returns = delta * mc_returns + (1 - delta) * n_step_returns
 
     # Set target return = reward for all terminal transitions
-    target_returns[terminals] = rewards[terminals]
+    # target_returns[terminals] = n_step_rewards[terminals]
 
     # Compute Temporal Difference (TD) errors (the "surprise" of the agent)
     td_errs = target_returns - pred_returns
