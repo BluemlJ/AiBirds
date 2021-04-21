@@ -4,7 +4,7 @@ import os
 import shutil
 import time
 
-from src.utils.utils import orange, yellow, red, bold, plot, user_agrees_to, sec2hhmmss, num2text, \
+from src.utils.utils import orange, yellow, red, bold, finalize_plot, user_agrees_to, sec2hhmmss, num2text, \
     data2pickle, pickle2data
 from src.envs.env import Environment
 from src.utils.logger import Logger
@@ -396,20 +396,20 @@ class Statistics:
         transitions = self.get_episode_transitions()
         final_scores = self.get_scores()
         if len(final_scores) > 0:
-            plot_moving_average(x=transitions,
-                                y=final_scores,
-                                title="Score history",
-                                x_label="Transition",
-                                y_label="Score",
-                                out_path=out_path + "scores.png",
-                                interp=True,
-                                plot_variance=True,
-                                show=True)
-            plt.plot(transitions, self.get_score_records())
-            plot(title="Score records",
-                 x_label="Episode",
-                 y_label="Score",
-                 out_path=out_path + "score_records.png")
+            add_charts(x_lsts=[transitions],
+                       y_lsts=[final_scores],
+                       labels=["Moving average"],
+                       mov_avg=True,
+                       interp=True,
+                       plot_variance=True,
+                       variance_labels=["90%% confidence"])
+            plt.plot(transitions, self.get_score_records(), label="Records", color=DEFAULT_COLORS[1])
+            finalize_plot(title="Score history",
+                          x_label="Transition",
+                          y_label="Score",
+                          out_path=out_path + "scores.png",
+                          legend=True,
+                          show=True)
 
     def plot_returns(self, out_path):
         final_returns = self.get_returns()
@@ -420,10 +420,10 @@ class Statistics:
                                 y_label="Return",
                                 out_path=out_path + "returns.png")
             plt.plot(self.get_return_records())
-            plot(title="Return records",
-                 x_label="Episode",
-                 y_label="Return",
-                 out_path=out_path + "return_records.png")
+            finalize_plot(title="Return records",
+                          x_label="Episode",
+                          y_label="Return",
+                          out_path=out_path + "return_records.png")
 
     def plot_times(self, out_path):
         if self.env_type.TIME_RELEVANT:
@@ -433,10 +433,10 @@ class Statistics:
                                 y_label="Time",
                                 out_path=out_path + "times.png")
             plt.plot(self.get_time_records())
-            plot(title="Episode length records",
-                 x_label="Episode",
-                 y_label="Time (game ticks)",
-                 out_path=out_path + "time_records.png")
+            finalize_plot(title="Episode length records",
+                          x_label="Episode",
+                          y_label="Time (game ticks)",
+                          out_path=out_path + "time_records.png")
 
     def plot_wins(self, out_path):
         plot_moving_average(self.get_wins(),
@@ -449,11 +449,11 @@ class Statistics:
         if self.get_current_learning_rate() is not np.nan:
             plt.plot(self.get_learning_rates())
             plt.ylim(bottom=0)
-            plot(title="Learning rate history",
-                 x_label="Train cycle", y_label="Learning rate",
-                 out_path=out_path + "learning_rates.png",
-                 legend=False,
-                 logarithmic=False)
+            finalize_plot(title="Learning rate history",
+                          x_label="Train cycle", y_label="Learning rate",
+                          out_path=out_path + "learning_rates.png",
+                          legend=False,
+                          logarithmic=False)
 
     def plot_loss(self, out_path):
         plot_moving_average(self.get_losses(),
@@ -465,10 +465,10 @@ class Statistics:
     def plot_priorities(self, out_path):
         if self.memory is not None:
             plt.hist(self.memory.get_priorities(), range=None, bins=100)
-            plot(title="Transition priorities in experience set",
-                 x_label="Priority value",
-                 y_label="Number of transitions",
-                 out_path=out_path + "priorities.png")
+            finalize_plot(title="Transition priorities in experience set",
+                          x_label="Priority value",
+                          y_label="Number of transitions",
+                          out_path=out_path + "priorities.png")
 
     def log_extreme_losses(self, individual_losses, trans_ids, predictions, targets, env):
         if self.logger is None:
@@ -525,10 +525,12 @@ def get_bound(x, y, n, bound="upper"):
         y = y[:-overhang]
         x = x[:-overhang]
 
+    quantile = 0.05
+
     if bound == "upper":
-        y = block_reduce(y, (n,), np.max)
+        y = block_reduce(y, (n,), np.quantile, func_kwargs={"q": 1 - quantile})
     else:
-        y = block_reduce(y, (n,), np.min)
+        y = block_reduce(y, (n,), np.quantile, func_kwargs={"q": quantile})
 
     x = block_reduce(x, (n,), np.average)
     return x, y
@@ -543,11 +545,11 @@ def plot_moving_average(y, y_label, x=None, interp=False, plot_variance=False,
     if validation_values is not None and validation_period is not None:
         add_validation_plot(validation_values, validation_period)
 
-    plot(y_label=y_label, **kwargs)
+    finalize_plot(y_label=y_label, **kwargs)
 
 
 def add_charts(y_lsts, x_lsts=None, colors=None, labels=None, mov_avg=False,
-               zero2nan=False, interp=False, plot_variance=False):
+               zero2nan=False, interp=False, plot_variance=False, variance_labels=None):
     """Adds one or multiple line chart(s) to an existing plot. Optionally converts into
     moving average (MA) if mov_avg=True. Automatically determines suitable MA windows size.
     Returns the used MA window size."""
@@ -589,9 +591,10 @@ def add_charts(y_lsts, x_lsts=None, colors=None, labels=None, mov_avg=False,
             plt.plot(x, y_ma, label=label, color=color)
 
             if plot_variance:
+                var_label = variance_labels[i] if variance_labels is not None else None
                 _, y_up = get_bound(x, y, ma_ws, "upper")
                 x_bounds, y_lo = get_bound(x, y, ma_ws, "lower")
-                plt.fill_between(x_bounds, y_lo, y_up, color=color, alpha=0.4)
+                plt.fill_between(x_bounds, y_lo, y_up, color=color, alpha=0.4, label=var_label)
         else:
             if x is not None:
                 plt.plot(x, y, label=label, color=color)
@@ -648,7 +651,7 @@ def compare_statistics(model_names, env_type, labels=None,
                     plot_variance=plot_variance)
 
 
-def plot_everything(out_path, env_type: Environment,  **kwargs):
+def plot_everything(out_path, env_type: Environment, **kwargs):
     # (Re-)create output folder
     if os.path.exists(out_path):
         shutil.rmtree(out_path)
@@ -684,7 +687,7 @@ def plot_everything(out_path, env_type: Environment,  **kwargs):
         compare_learning_rates(**kwargs)
 
 
-def compare_returns(**kwargs):
+def compare_returns(plot_variance, **kwargs):
     plot_comparison_on_domain(name="returns",
                               getter_handle=Statistics.get_returns,
                               orig_domain="episodes",
@@ -692,6 +695,7 @@ def compare_returns(**kwargs):
                               y_label="Return",
                               mov_avg=True,
                               logarithmic=False,
+                              plot_variance=plot_variance,
                               **kwargs)
     plot_comparison_on_domain(name="return_records",
                               getter_handle=Statistics.get_return_records,
@@ -700,10 +704,11 @@ def compare_returns(**kwargs):
                               y_label="Return",
                               mov_avg=False,
                               logarithmic=False,
+                              plot_variance=False,
                               **kwargs)
 
 
-def compare_scores(**kwargs):
+def compare_scores(plot_variance, **kwargs):
     plot_comparison_on_domain(name="scores",
                               getter_handle=Statistics.get_scores,
                               orig_domain="episodes",
@@ -711,6 +716,7 @@ def compare_scores(**kwargs):
                               y_label="Score",
                               mov_avg=True,
                               logarithmic=True,
+                              plot_variance=plot_variance,
                               **kwargs)
     plot_comparison_on_domain(name="score_records",
                               getter_handle=Statistics.get_score_records,
@@ -719,10 +725,11 @@ def compare_scores(**kwargs):
                               y_label="Score",
                               mov_avg=False,
                               logarithmic=True,
+                              plot_variance=False,
                               **kwargs)
 
 
-def compare_times(**kwargs):
+def compare_times(plot_variance, **kwargs):
     plot_comparison_on_domain(name="times",
                               getter_handle=Statistics.get_times,
                               orig_domain="episodes",
@@ -730,6 +737,7 @@ def compare_times(**kwargs):
                               y_label="Episode length",
                               mov_avg=True,
                               logarithmic=True,
+                              plot_variance=plot_variance,
                               **kwargs)
     plot_comparison_on_domain(name="time_records",
                               getter_handle=Statistics.get_time_records,
@@ -738,6 +746,7 @@ def compare_times(**kwargs):
                               y_label="Episode length",
                               mov_avg=False,
                               logarithmic=True,
+                              plot_variance=False,
                               **kwargs)
 
 
@@ -764,6 +773,7 @@ def compare_losses(**kwargs):
 
 
 def compare_learning_rates(**kwargs):
+    kwargs.pop("plot_variance")
     plot_comparison_on_domain(name="learning-rates",
                               getter_handle=Statistics.get_learning_rates,
                               orig_domain="cycles",
@@ -771,6 +781,7 @@ def compare_learning_rates(**kwargs):
                               y_label="Learning rate",
                               mov_avg=False,
                               logarithmic=False,
+                              plot_variance=False,
                               **kwargs)
 
 
@@ -798,11 +809,11 @@ def plot_comparison_on_domain(name, stats_collection, labels, getter_handle, dom
 
     keep = logarithmic
     time_domain = domain == "wall-clock_time"
-    plot(title=title, x_label=x_label, y_label=y_label, out_path=out_path + name + ".png",
-         legend=True, logarithmic=False, time_domain=time_domain, keep=keep)
+    finalize_plot(title=title, x_label=x_label, y_label=y_label, out_path=out_path + name + ".png",
+                  legend=True, logarithmic=False, time_domain=time_domain, keep=keep)
     if logarithmic:
-        plot(title=title, x_label=x_label, y_label=y_label, out_path=out_path + "log_" + name + ".png",
-             legend=True, logarithmic=True, time_domain=time_domain, keep=False)
+        finalize_plot(title=title, x_label=x_label, y_label=y_label, out_path=out_path + "log_" + name + ".png",
+                      legend=True, logarithmic=True, time_domain=time_domain, keep=False)
 
 
 def interpolate(x, y, step_size):

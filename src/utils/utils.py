@@ -10,8 +10,8 @@ import tensorflow as tf
 from numpy.random import RandomState  # , SeedSequence, MT19937
 
 
-def plot(title, x_label, y_label, out_path, legend=False, logarithmic=False,
-         time_domain=False, show=False, keep=False):
+def finalize_plot(title, x_label, y_label, out_path, legend=False, logarithmic=False,
+                  time_domain=False, show=False, keep=False):
     plt.title(title)
     plt.xlabel(x_label)
     plt.ylabel(y_label)
@@ -37,7 +37,7 @@ def plot_validation(values, title, ylabel, output_path):
 
     plt.bar(range(number_chunks), avg_scores, color='silver', label="Average per level type")
     plt.hlines(average, xmin=0, xmax=number_chunks - 1, colors=['#009d81'], label="Total average")
-    plot(title, "Level type", ylabel, output_path, True, False)
+    finalize_plot(title, "Level type", ylabel, output_path, True, False)
 
 
 def plot_highscores(highscores_ai, highscores_human, output_path=None):
