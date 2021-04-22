@@ -8,6 +8,7 @@ import os
 import tensorflow as tf
 
 from numpy.random import RandomState  # , SeedSequence, MT19937
+from src.utils.text_sty import print_warning
 
 
 def finalize_plot(title, x_label, y_label, out_path, legend=False, logarithmic=False,
@@ -112,7 +113,7 @@ def pickle2data(in_path):
             data = pickle.load(pickle_file)
             return data
     except Exception as e:
-        print(red("Unable to unpickle data from '%s'!" % in_path))
+        print_warning("Unable to unpickle data from '%s'!" % in_path)
         print(e)
     return None
 
@@ -148,23 +149,6 @@ def user_agrees_to(question):
             return False
         else:
             print("Invalid answer. Please type 'y' for 'Yes' or type 'n' for 'No.'")
-
-
-# Colors and formatting for console text
-def orange(text):
-    return "\033[33m" + text + "\033[0m"
-
-
-def yellow(text):
-    return "\033[93m" + text + "\033[0m"
-
-
-def red(text):
-    return "\033[91m" + text + "\033[0m"
-
-
-def bold(text):
-    return "\033[1m" + text + "\033[0m"
 
 
 def del_first(lst, n):
@@ -203,18 +187,6 @@ def pad_data_with_zero_instances(data, pad_len):
 def copy_object_with_config(model):
     model_class = type(model)
     return model_class(**model.get_config())
-
-
-def print_info(text):
-    print(yellow(text))
-
-
-def print_warning(text):
-    print(orange(text))
-
-
-def print_error(text):
-    print(red(text))
 
 
 def set_seed(seed):

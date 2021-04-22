@@ -50,7 +50,7 @@ class Snake(ParallelEnvironment):
         self.fruit_fields = np.zeros(shape=(self.num_par_inst, self.height, self.width), dtype="bool")
 
         # State control
-        self.time_since_last_fruit = np.zeros(shape=self.num_par_inst, dtype="uint")
+        self.times_since_last_fruit = np.zeros(shape=self.num_par_inst, dtype="uint")
 
         self.screen = None
 
@@ -70,7 +70,7 @@ class Snake(ParallelEnvironment):
         self.scores[:] = 0
         self.times[:] = 0
         self.game_overs[:] = False
-        self.time_since_last_fruit[:] = 0
+        self.times_since_last_fruit[:] = 0
 
         self.__init_env(range(self.num_par_inst))
 
@@ -88,7 +88,7 @@ class Snake(ParallelEnvironment):
         self.scores[ids] = 0
         self.times[ids] = 0
         self.game_overs[ids] = False
-        self.time_since_last_fruit[ids] = 0
+        self.times_since_last_fruit[ids] = 0
 
         self.__init_env(ids)
 
@@ -116,10 +116,6 @@ class Snake(ParallelEnvironment):
             self.fruit_locations[idx] = spawn_coords
             self.fruit_fields[idx, spawn_coords[0], spawn_coords[1]] = True
 
-        # self.fruit_locations[ids] = np.random.randint(low=(0, 0), high=(self.height, self.width), size=(len(ids), 2))
-        # self.fruit_fields[ids] = False
-        # self.fruit_fields[ids, self.fruit_locations[ids, 0], self.fruit_locations[ids, 1]] = True
-
     def step(self, actions):
         # Update the env
         self.update_snake_movement_orientation(actions)
@@ -129,7 +125,7 @@ class Snake(ParallelEnvironment):
 
         # Compute statistics
         self.times[~ self.game_overs] += 1
-        self.time_since_last_fruit += 1
+        self.times_since_last_fruit += 1
         self.scores = self.snake_bodies.get_lengths()
 
         rewards = np.zeros(self.num_par_inst)
@@ -142,8 +138,8 @@ class Snake(ParallelEnvironment):
         rewards[game_won] = 10
         self.game_overs[game_won] = True
 
-        self.time_since_last_fruit[fruit_found] = 0
-        starved = self.time_since_last_fruit >= MAX_TIME_WITHOUT_SCORE
+        self.times_since_last_fruit[fruit_found] = 0
+        starved = self.times_since_last_fruit >= MAX_TIME_WITHOUT_SCORE
         self.game_overs[starved] = True
 
         rewards[self.game_overs] -= 1
@@ -211,10 +207,11 @@ class Snake(ParallelEnvironment):
 
     def get_states(self):
         fields = np.stack((self.snake_head_fields, self.snake_body_fields, self.fruit_fields), axis=3)
-        one_hot_orientations = - np.ones((self.num_par_inst, 4))
+        one_hot_orientations = np.zeros((self.num_par_inst, 4))
         one_hot_orientations[range(self.num_par_inst), self.snake_movement_orientations] = 1
+        one_hot_orientations = bool2num(one_hot_orientations)
         numeric_state = np.concatenate((one_hot_orientations,
-                                        np.expand_dims(self.time_since_last_fruit / MAX_TIME_WITHOUT_SCORE, axis=1)),
+                                        np.expand_dims(self.times_since_last_fruit / MAX_TIME_WITHOUT_SCORE, axis=1)),
                                        axis=1)
         return bool2num(fields), numeric_state
 
@@ -291,7 +288,7 @@ class Snake(ParallelEnvironment):
 
         # Timer text
         font = pygame.font.SysFont('Consolas', 20)
-        text = font.render(str(MAX_TIME_WITHOUT_SCORE - self.time_since_last_fruit[0]),
+        text = font.render(str(MAX_TIME_WITHOUT_SCORE - self.times_since_last_fruit[0]),
                            True, STYLE["font_color"], None)
         rect = text.get_rect()
         rect.bottomright = (self.screen.get_width() - scr_marg_left - 200, scr_marg_top - 30)
@@ -335,9 +332,11 @@ class Snake(ParallelEnvironment):
 
     def state_1d_to_text(self, state):
         descriptions = np.array(["up", "right", "down", "left"])
-        orientation = descriptions[np.array(state[0:4], dtype='bool')][0]
+        one_hot = num2bool(state[0:4])
+        dir_id = np.argmax(one_hot)
+        orientation = descriptions[dir_id]
         text = "- head orientation: %s\n" % orientation + \
-               "- time since last fruit: %d" % state[4]
+               "- time since last fruit: %d" % int(state[4] * MAX_TIME_WITHOUT_SCORE)
         return text
 
 

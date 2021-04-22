@@ -55,6 +55,7 @@ class Agent:
         self.learning_rate = None
         self.epsilon = None
         self.delta = None
+        self.use_mc_return = None  # Monte Carlo
 
         # Model architecture
         self.stem_network = stem_network
@@ -158,8 +159,7 @@ class Agent:
                  learning_rate: ParamScheduler,
                  target_sync_period, actor_sync_period,
                  gamma, epsilon: ParamScheduler,
-                 delta: ParamScheduler,
-                 alpha,
+                 use_mc_return, alpha,
                  verbose=False):
         """The agent's main training routine.
 
@@ -176,15 +176,14 @@ class Agent:
         :param actor_sync_period: The number of levels between each synchronization of learner and actor.
         :param gamma: Discount factor
         :param epsilon: Epsilon class, probability for random shot (epsilon greedy policy)
-        :param delta: Trade-off factor between Monte Carlo target return and one-step target return,
-                   delta = 1 means MC return, delta = 0 means one-step return
+        :param use_mc_return: If True, uses Monte Carlo return targets instead of n-step TD targets
         :param alpha: For Prioritized Experience Replay: the larger alpha the stronger prioritization
         :param verbose:
         """
 
         self.learning_rate = learning_rate
         self.epsilon = epsilon
-        self.delta = delta
+        self.use_mc_return = use_mc_return
 
         # Save all hyperparameters in txt file
         self.write_hyperparams_file(num_parallel_steps, replay_period, replay_size_multiplier, target_sync_period,
@@ -253,8 +252,7 @@ class Agent:
             # Update the network weights every train_period levels to fit experience
             replay_size = replay_size_multiplier * new_transitions
             if i % replay_period == 0 and replay_size > 0:
-                learned_trans = self.learn(replay_size, gamma, delta=self.delta.get_value(done_transitions),
-                                           epochs=replay_epochs, alpha=alpha, verbose=verbose)
+                learned_trans = self.learn(replay_size, gamma, epochs=replay_epochs, alpha=alpha, verbose=verbose)
                 new_transitions = max(0, new_transitions - learned_trans)
 
             # Save model checkpoint
@@ -282,13 +280,11 @@ class Agent:
 
         print("Practicing finished successfully!")
 
-    def learn(self, replay_size, gamma, delta, epochs=1, alpha=0.7, verbose=False):
+    def learn(self, replay_size, gamma, epochs=1, alpha=0.7, verbose=False):
         """Updates the online network's weights. This is the actual learning procedure of the agent.
 
         :param replay_size: Number of transitions to be learned from
         :param gamma: Discount factor
-        :param delta: Trade-off factor between Monte Carlo target return and one-step target return,
-                      delta = 1 means MC return, delta = 0 means one-step return
         :param epochs:
         :param alpha: For Prioritized Experience Replay: the larger alpha the stronger prioritization
         :param verbose:
@@ -299,7 +295,7 @@ class Agent:
             return 0
 
         if not self.sequential:
-            return self.learn_instances(replay_size, gamma=gamma, delta=delta, alpha=alpha,
+            return self.learn_instances(replay_size, gamma=gamma, alpha=alpha,
                                         epochs=epochs, verbose=verbose)
         else:
             num_sequences = replay_size // self.sequence_len
@@ -309,7 +305,7 @@ class Agent:
             else:
                 return 0
 
-    def learn_instances(self, num_instances, gamma, delta, epochs=1, alpha=0.7, verbose=False):
+    def learn_instances(self, num_instances, gamma, epochs=1, alpha=0.7, verbose=False):
         """Uses batches of single instances to learn on."""
 
         # Obtain a list of useful transitions to learn on
@@ -333,9 +329,12 @@ class Agent:
         next_q_vals = self.target_learner.predict(next_states, batch_size=self.replay_batch_size)
         pred_next_returns = np.max(next_q_vals, axis=1)
 
-        # Compute target_returns and temporal difference (TD) errors
-        target_returns, td_errs = compute_target_returns(pred_returns, pred_next_returns, n_step_rewards, n_step_mask,
-                                                         gamma, delta, mc_returns, terminals)
+        # Compute (n-step or MC) return targets and temporal-difference (TD) errors (the "surprise" of the agent)
+        if self.use_mc_return:
+            target_returns = mc_returns
+        else:
+            target_returns = get_n_step_return(pred_next_returns, n_step_rewards, n_step_mask, gamma, terminals)
+        td_errs = target_returns - pred_returns
 
         # Update transition priorities according to TD errors
         self.memory.set_priorities(trans_ids, np.abs(td_errs))
@@ -546,9 +545,9 @@ class Agent:
         new_lr = self.learning_rate.get_value(self.stats.current_run_trans_no)
         self.optimizer.learning_rate.assign(new_lr)
 
-    def learn_entire_experience(self, batch_size, epochs, gamma, delta, alpha):
+    def learn_entire_experience(self, batch_size, epochs, gamma, alpha):
         experience_length = self.memory.get_length()
-        self.learn_instances(experience_length, gamma, delta, batch_size, epochs, alpha)
+        self.learn_instances(experience_length, gamma, batch_size, epochs, alpha)
 
     def test_performance(self, num_levels=100):
         """Perform validation of the agent on the validation set. On all validation levels,
@@ -753,6 +752,7 @@ class Agent:
                "\n\nalpha: %f" % alpha + \
                "\ngamma: %f" % gamma + \
                "\nn_step: %d" % self.memory.n_step + \
+               "\nuse_mc_return: " + str(self.use_mc_return) + \
                "\neta: %f" % self.memory.eta + \
                "\nobs_buf_size: %d" % self.obs_buf_size + \
                "\nexp_buf_size: %d" % self.mem_size + \
@@ -769,9 +769,6 @@ class Agent:
 
         text += "\n\nEPSILON:"
         text += config2text(self.epsilon.get_config())
-
-        text += "\n\nDELTA:"
-        text += config2text(self.delta.get_config())
 
         hyperparams_file.write(text + "\n\n")
         self.online_learner.summary(print_fn=lambda x: hyperparams_file.write(x + '\n'))
@@ -795,11 +792,10 @@ def compute_sample_weights(sample_priorities, sample_probabilities, total_size, 
     return np.abs(np.multiply(weights, sample_priorities))
 
 
-def compute_target_returns(pred_returns, pred_next_returns, n_step_rewards, n_step_mask,
-                           gamma, delta, mc_returns, terminals):
+def get_n_step_return(pred_next_returns, n_step_rewards, n_step_mask, gamma, terminals):
     # Prepare
     n = n_step_rewards.shape[-1]
-    step_axis = len(n_step_rewards.shape) - 1
+    step_axis = n_step_rewards.ndim - 1
     final_step_mask = n_step_mask[:, -1] & ~ terminals
     mask = np.append(n_step_mask, np.expand_dims(final_step_mask, axis=1), axis=step_axis)
 
@@ -810,16 +806,7 @@ def compute_target_returns(pred_returns, pred_next_returns, n_step_rewards, n_st
     rewards_returns_discounted[~ mask] = 0
     n_step_returns = np.sum(rewards_returns_discounted, axis=step_axis)
 
-    # Compute convex combination of MC return and one-step return
-    target_returns = delta * mc_returns + (1 - delta) * n_step_returns
-
-    # Set target return = reward for all terminal transitions
-    # target_returns[terminals] = n_step_rewards[terminals]
-
-    # Compute Temporal Difference (TD) errors (the "surprise" of the agent)
-    td_errs = target_returns - pred_returns
-
-    return target_returns, td_errs
+    return n_step_returns
 
 
 def load_model(model_name, env_type, checkpoint_no=None):

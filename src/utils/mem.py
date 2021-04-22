@@ -1,5 +1,6 @@
 import numpy as np
-from src.utils.utils import del_first, print_error, yellow, orange
+from src.utils.utils import del_first
+from src.utils.text_sty import print_error, yellow, orange
 
 
 class ReplayMemory:
@@ -79,7 +80,7 @@ class ReplayMemory:
         self.priorities[self.stack_ptr:end_ptr] = self.max_priority
         self.returns[end_ptr - 1] = rewards[-1]
         for i in range(1, ep_len):
-            self.returns[end_ptr - i - 1] = rewards[-i] + gamma * self.returns[end_ptr - i]
+            self.returns[end_ptr - i - 1] = rewards[-i - 1] + gamma * self.returns[end_ptr - i]
 
         # Add sequences to sequence list
         if self.sequential:
@@ -182,7 +183,7 @@ class ReplayMemory:
         terminals = self.terminals[trans_ids]
 
         # Obtain n-step rewards TODO: implement for sequential
-        step_axis = len(trans_ids.shape)
+        step_axis = trans_ids.ndim
         ids_repeated = np.repeat(np.expand_dims(trans_ids, axis=step_axis), self.n_step, axis=step_axis)
         lookaheads = np.mgrid[0:len(trans_ids), 0:self.n_step][1]
         n_step_trans_ids = ids_repeated + lookaheads

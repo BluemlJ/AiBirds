@@ -4,14 +4,12 @@ import src.agents.comp as comp
 from src.utils.utils import setup_hardware, set_seed
 
 # Meta
-setup_hardware(use_gpu=False, gpu_memory_limit=4096)
+setup_hardware(use_gpu=True, gpu_memory_limit=4096)
 seed = 735249652
 set_seed(seed)
 
 # General parameters
 env = Snake(num_par_inst=500)
-gamma = 0.999
-n_step = 10
 
 # Training and synchronization
 replay_period = 64
@@ -20,9 +18,14 @@ replay_epochs = 1
 replay_batch_size = 1024
 target_sync_period = 128
 actor_sync_period = replay_period
-learning_rate = ParamScheduler(init_value=0.0005, decay_mode="step", milestones=[5000000, 50000000],
-                               milestone_factor=0.4)
-delta = ParamScheduler(init_value=0)
+learning_rate = ParamScheduler(init_value=0.00008, warmup_transitions=400000)
+# learning_rate = ParamScheduler(init_value=0.0005, decay_mode="step", milestones=[5000000, 50000000],
+#                                milestone_factor=0.4)
+
+# Target return
+gamma = 0.999
+n_step = 1
+use_mc_return = False
 
 # Model with recurrence
 sequence_len = 20
@@ -51,7 +54,7 @@ exp_buf_size = 4000000  # total number of transitions that can fit into the agen
 agent = Agent(env=env,
               stem_network=stem_model,
               q_network=q_network,
-              name="debug",
+              name="new_fruit_spawning_2",
               replay_batch_size=replay_batch_size,
               n_step=n_step,
               sequence_shift=sequence_shift,
@@ -61,7 +64,7 @@ agent = Agent(env=env,
               mem_size=exp_buf_size,
               use_pretrained=False,
               seed=seed)
-# agent.restore("eps_0")
+agent.restore("new_fruit_spawning")
 
 agent.practice(num_parallel_steps=1000000,
                replay_period=replay_period,
@@ -72,7 +75,7 @@ agent.practice(num_parallel_steps=1000000,
                actor_sync_period=actor_sync_period,
                gamma=gamma,
                epsilon=epsilon,
-               delta=delta,
+               use_mc_return=use_mc_return,
                alpha=0.7,
                verbose=False)
 

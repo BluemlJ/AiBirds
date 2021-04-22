@@ -17,6 +17,8 @@ The idea originated from the [Angry Birds AI Competition](http://aibirds.org/).
 	* Double Q-Learning
 	* Sequential Learning (for LSTMs and other RNNs)
 	* Distributed RL
+	* n-step Expected Sarsa
+	* Monte Carlo Return Targets
 * Environments:
     * Angry Birds, with level generator
     * Snake
@@ -31,7 +33,6 @@ The idea originated from the [Angry Birds AI Competition](http://aibirds.org/).
     * and much more
     
 ### Soon to come
-* n-step returns
 * frame stacking
 * Angry Birds environment parallelization
 
@@ -53,6 +54,8 @@ Any generated output (models, plots, statistics etc.) will be saved in `out/`.
 | `num_parallel_inst`      | `500`             | Number of simultaneously executed environments | Training overhead dominates computation time | Possibly worse sample complexity, GPU or RAM out of memory |
 | `num_parallel_steps`     | `1000000`         | Number of transitions done per parallel environments | Learning stops before agent performance is optimal | Wasted energy, overfitting |
 | `gamma`                  | `0.999`           | Discount factor | Short-sighted strategy, early events dominate return | Far-sighted strategy, late events dominate return, target shift, return explosion |
+| `n_step`                 | `1`               | Number of steps used for Temporal Difference (TD) bootstrapping |  |  |
+| `use_mc_return`          | `False`           | If True, uses Monte Carlo instead of n-step TD |  |  |
 | **Model**
 | `latent_dim`             | `128`             | Width of latent layer of stem model | Model cannot learn the game entirely or makes slow training progress | Huge number of (unused) model parameters |
 | `latent_depth`           | `1`               | Number of consecutive latent layers | Model cannot learn the game entirely or makes slow training progress | Many (unused) model parameters |
@@ -83,8 +86,7 @@ Any generated output (models, plots, statistics etc.) will be saved in `out/`.
 | `eta`                    | `0.9`             | For sequential learning: determines sequence priority. `0`: sequence prio = average instance prio, `1`: sequence prio = max instance prio. | ? | ? |
 | **Other**
 | `obs_buf_size`           | `2000`            | Number of transitions that fit into the (temporal) observations buffer per environment, max length of episodes saved to replay memory | Many wasted transitions, slow training progress, too strong focus on late-game transitions | RAM out of memory, too weak focus on late-game transitions |
-| `mem_size`               | `4000000`         | Number of transitions that fit into the replay memory | Overfitting to recent observations | RAM out of memory, large computation overhead due to replay sampling |
-| `delta`                  | `0`               | Proportion of Monte Carlo return used as target Q-value instead of value predicted by target Q-network | ? | ? |
+| `mem_size`               | `4000000`         | Number of transitions that fit into the replay memory | Overfitting to recent observations | RAM out of memory, too old transitions in replays => in case of RNNs can lead to _recurrent state staleness_ due to representational drift; large computation overhead due to replay sampling |
 |                          |                   |  |  |  |
 
 

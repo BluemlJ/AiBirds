@@ -4,11 +4,12 @@ import os
 import shutil
 import time
 
-from src.utils.utils import orange, yellow, red, bold, finalize_plot, user_agrees_to, sec2hhmmss, num2text, \
+from src.utils.utils import finalize_plot, user_agrees_to, sec2hhmmss, num2text, \
     data2pickle, pickle2data
 from src.envs.env import Environment
 from src.utils.logger import Logger
 from src.utils.mem import ReplayMemory
+from src.utils.text_sty import orange, yellow, red, bold
 from skimage.measure import block_reduce
 
 # For comparison plots
@@ -184,7 +185,7 @@ class Statistics:
             return np.nan
 
     def get_current_learning_rate(self):
-        if self.get_num_cycles() > 0:
+        if self.get_num_cycles() > 0 and self.current_run_trans_no > 0:
             return self.get_learning_rates()[-1]
         else:
             return np.nan
@@ -385,58 +386,48 @@ class Statistics:
     def plot_stats(self, out_path):
         self.plot_scores(out_path)
         self.plot_returns(out_path)
-        self.plot_times(out_path)
+        if self.env_type.TIME_RELEVANT:
+            self.plot_times(out_path)
         if self.env_type.WINS_RELEVANT:
             self.plot_wins(out_path)
         self.plot_learning_rates(out_path)
         self.plot_loss(out_path)
         self.plot_priorities(out_path)
 
-    def plot_scores(self, out_path):
+    def plot_real_time(self, y, y_records, title, y_label, out_path):
         transitions = self.get_episode_transitions()
-        final_scores = self.get_scores()
-        if len(final_scores) > 0:
-            add_charts(x_lsts=[transitions],
-                       y_lsts=[final_scores],
-                       labels=["Moving average"],
-                       mov_avg=True,
-                       interp=True,
-                       plot_variance=True,
-                       variance_labels=["90%% confidence"])
-            plt.plot(transitions, self.get_score_records(), label="Records", color=DEFAULT_COLORS[1])
-            finalize_plot(title="Score history",
-                          x_label="Transition",
-                          y_label="Score",
-                          out_path=out_path + "scores.png",
-                          legend=True,
-                          show=True)
+        add_charts(x_lsts=[transitions],
+                   y_lsts=[y],
+                   labels=["Moving average"],
+                   mov_avg=True,
+                   interp=True,
+                   plot_confidence=True,
+                   confidence_labels=["90% confidence"])
+        plt.plot(transitions, y_records, label="Records", color=DEFAULT_COLORS[1])
+        finalize_plot(title=title,
+                      x_label="Transition",
+                      y_label=y_label,
+                      out_path=out_path,
+                      legend=True,
+                      show=True)
+
+    def plot_scores(self, out_path):
+        scores = self.get_scores()
+        if len(scores) > 0:
+            self.plot_real_time(y=scores, y_records=self.get_score_records(), title="Score history",
+                                y_label="Score", out_path=out_path + "scores.png")
 
     def plot_returns(self, out_path):
-        final_returns = self.get_returns()
-        if len(final_returns) > 0:
-            plot_moving_average(final_returns,
-                                title="Return history",
-                                x_label="Episode",
-                                y_label="Return",
-                                out_path=out_path + "returns.png")
-            plt.plot(self.get_return_records())
-            finalize_plot(title="Return records",
-                          x_label="Episode",
-                          y_label="Return",
-                          out_path=out_path + "return_records.png")
+        returns = self.get_returns()
+        if len(returns) > 0:
+            self.plot_real_time(y=returns, y_records=self.get_return_records(), title="Return history",
+                                y_label="Return", out_path=out_path + "returns.png")
 
     def plot_times(self, out_path):
-        if self.env_type.TIME_RELEVANT:
-            plot_moving_average(self.get_times(),
-                                title="Episode length history",
-                                x_label="Episode",
-                                y_label="Time",
-                                out_path=out_path + "times.png")
-            plt.plot(self.get_time_records())
-            finalize_plot(title="Episode length records",
-                          x_label="Episode",
-                          y_label="Time (game ticks)",
-                          out_path=out_path + "time_records.png")
+        times = self.get_times()
+        if len(times) > 0:
+            self.plot_real_time(y=times, y_records=self.get_time_records(), title="Time history",
+                                y_label="Episode length", out_path=out_path + "times.png")
 
     def plot_wins(self, out_path):
         plot_moving_average(self.get_wins(),
@@ -538,7 +529,7 @@ def get_bound(x, y, n, bound="upper"):
 
 def plot_moving_average(y, y_label, x=None, interp=False, plot_variance=False,
                         validation_values=None, validation_period=None, **kwargs):
-    ma_ws = add_charts(x_lsts=[x], y_lsts=[y], mov_avg=True, interp=interp, plot_variance=plot_variance)
+    ma_ws = add_charts(x_lsts=[x], y_lsts=[y], mov_avg=True, interp=interp, plot_confidence=plot_variance)
     if ma_ws is not None:
         y_label += " (%s MA)" % num2text(ma_ws)
 
@@ -549,16 +540,19 @@ def plot_moving_average(y, y_label, x=None, interp=False, plot_variance=False,
 
 
 def add_charts(y_lsts, x_lsts=None, colors=None, labels=None, mov_avg=False,
-               zero2nan=False, interp=False, plot_variance=False, variance_labels=None):
+               zero2nan=False, interp=False, plot_confidence=False, confidence_labels=None):
     """Adds one or multiple line chart(s) to an existing plot. Optionally converts into
     moving average (MA) if mov_avg=True. Automatically determines suitable MA windows size.
     Returns the used MA window size."""
     assert not interp or x_lsts is not None
-    assert not plot_variance or mov_avg
+    assert not plot_confidence or mov_avg
 
     if interp:
         max_len = PLOT_STEP_NO
-        max_x = np.max([x[-1] for x in x_lsts])
+        max_x = 0
+        for x in x_lsts:
+            if len(x) > 0:
+                max_x = max(max_x, x[-1])
         step_size = max_x / max_len
     else:
         step_size = 1
@@ -568,19 +562,24 @@ def add_charts(y_lsts, x_lsts=None, colors=None, labels=None, mov_avg=False,
     ma_ws = max_len // 40
 
     for i, y in enumerate(y_lsts):
+        label = labels[i] if labels is not None else None
+        color = colors[i] if colors is not None else DEFAULT_COLORS[i]
+
+        if len(y) <= 1:
+            add_empty_plot(label=label, color=color)
+            continue
+
         if interp:
             x, y = interpolate(x_lsts[i], y, step_size)
         else:
             x = None
 
-        label = labels[i] if labels is not None else None
-        color = colors[i] if colors is not None else DEFAULT_COLORS[i]
-
         if mov_avg:
             y_ma = get_moving_avg_lst(y, ma_ws)
 
             if len(y_ma) == 0 and label is not None:
-                add_empty_plot(label=label)
+                add_empty_plot(label=label, color=color)
+                continue
 
             if x is None:
                 x = np.arange(len(y_ma))
@@ -590,8 +589,8 @@ def add_charts(y_lsts, x_lsts=None, colors=None, labels=None, mov_avg=False,
 
             plt.plot(x, y_ma, label=label, color=color)
 
-            if plot_variance:
-                var_label = variance_labels[i] if variance_labels is not None else None
+            if plot_confidence:
+                var_label = confidence_labels[i] if confidence_labels is not None else None
                 _, y_up = get_bound(x, y, ma_ws, "upper")
                 x_bounds, y_lo = get_bound(x, y, ma_ws, "lower")
                 plt.fill_between(x_bounds, y_lo, y_up, color=color, alpha=0.4, label=var_label)
@@ -607,8 +606,8 @@ def add_charts(y_lsts, x_lsts=None, colors=None, labels=None, mov_avg=False,
         return None
 
 
-def add_empty_plot(label):
-    plt.plot([], [], label=label)
+def add_empty_plot(label, color=None):
+    plt.plot([], [], label=label, color=color)
 
 
 def compare_statistics(model_names, env_type, labels=None,
@@ -803,7 +802,7 @@ def plot_comparison_on_domain(name, stats_collection, labels, getter_handle, dom
         y_lsts += [y]
 
     ma_ws = add_charts(x_lsts=x_lsts, y_lsts=y_lsts, labels=labels, mov_avg=mov_avg, zero2nan=logarithmic,
-                       interp=domain != orig_domain, plot_variance=plot_variance)
+                       interp=domain != orig_domain, plot_confidence=plot_variance)
     if ma_ws is not None:
         y_label += " (%s MA)" % num2text(ma_ws)
 
@@ -817,6 +816,8 @@ def plot_comparison_on_domain(name, stats_collection, labels, getter_handle, dom
 
 
 def interpolate(x, y, step_size):
+    if step_size == 0:
+        return x, y
     x_eval = np.arange(start=x[0], stop=x[-1], step=step_size)
     y_interp = np.interp(x_eval, x, y, left=np.nan, right=np.nan)
     return x_eval, y_interp
@@ -835,7 +836,7 @@ def cut_data(x_values, y_values, domain,
     elif domain == "transitions" and cut_at_transition is not None:
         x_values, y_values = cut_too_late(x_values, y_values, cut_at_transition)
     elif domain == "wall-clock_time" and cut_at_hour is not None:
-        x_values, y_values = cut_too_late(x_values, y_values, int(cut_at_hour))
+        x_values, y_values = cut_too_late(x_values, y_values, cut_at_hour)
     return x_values, y_values
 
 
