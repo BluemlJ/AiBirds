@@ -129,13 +129,13 @@ class Snake(ParallelEnvironment):
         self.scores = self.snake_bodies.get_lengths()
 
         rewards = np.zeros(self.num_par_inst)
-        rewards[fruit_found] = 1  # np.log2((self.scores[fruit_found] + 2) / (self.scores[fruit_found] + 1))
-        # - self.time_since_last_score / MAX_TIME_WITHOUT_SCORE
+        rewards[fruit_found] = 0.5  # np.log2((self.scores[fruit_found] + 2) / (self.scores[fruit_found] + 1))
+        # rewards += self.times_since_last_fruit / 1800  # TODO: Test
         # Encourage faster fruit gathering: doesn't work
         # rewards[:] -= 0.005  # rotten fruit
 
         game_won = self.scores == self.max_score
-        rewards[game_won] = 10
+        rewards[game_won] = 0.5  # evens out the death penalty
         self.game_overs[game_won] = True
 
         self.times_since_last_fruit[fruit_found] = 0
@@ -217,7 +217,7 @@ class Snake(ParallelEnvironment):
 
     def get_state_shapes(self):
         image_state_shape = (self.height, self.width, 3)
-        numerical_state_shape = 5
+        numerical_state_shape = (5,)
         return [image_state_shape, numerical_state_shape]
 
     def get_config(self):
@@ -302,6 +302,10 @@ class Snake(ParallelEnvironment):
         self.screen.blit(text, rect)
 
         pygame.display.flip()
+
+    def state2text(self, state):
+        state_2d, state_1d = state
+        return self.state_2d_to_text(state_2d) + "\n" + self.state_1d_to_text(state_1d)
 
     def state_2d_to_text(self, state):
         state = num2bool(state)

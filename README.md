@@ -53,6 +53,7 @@ Any generated output (models, plots, statistics etc.) will be saved in `out/`.
 | **General**
 | `num_parallel_inst`      | `500`             | Number of simultaneously executed environments | Training overhead dominates computation time | Possibly worse sample complexity, GPU or RAM out of memory |
 | `num_parallel_steps`     | `1000000`         | Number of transitions done per parallel environments | Learning stops before agent performance is optimal | Wasted energy, overfitting |
+| **Learning target**
 | `gamma`                  | `0.999`           | Discount factor | Short-sighted strategy, early events dominate return | Far-sighted strategy, late events dominate return, target shift, return explosion |
 | `n_step`                 | `1`               | Number of steps used for Temporal Difference (TD) bootstrapping |  |  |
 | `use_mc_return`          | `False`           | If True, uses Monte Carlo instead of n-step TD |  |  |
@@ -63,6 +64,7 @@ Any generated output (models, plots, statistics etc.) will be saved in `out/`.
 | `latent_v_dim`           | `64`              | Width of latent layer of _value_ part of Q-network | Similar to `latent_dim` | Similar to `latent_dim` |
 | `latent_a_dim`           | `64`              | Width of latent layer of _advantage_ part of Q-network | Similar to `latent_dim` | Similar to `latent_dim` |
 | **Replay (training)**
+| `mem_size`               | `4000000`         | Number of transitions that fit into the replay memory | Overfitting to recent observations | RAM out of memory, too old transitions in replays => in case of RNNs can lead to _recurrent state staleness_ due to representational drift; large computation overhead due to replay sampling |
 | `replay_period`          | `64`              | Number of (parallel) steps between each training session of the learner | Training overhead dominates computation time | Slow training progress |
 | `replay_size_multiplier` | `4`               | Determines replay size by multiplying number of new transitions with this factor | Too strong focus on new observations, overfitting | Too weak focus on new observations, slow training progress |
 | `replay_batch_size`      | `1024`            | Batch size used for learning, depends on GPU | GPU parallelization not used effectively | GPU out of memory |
@@ -85,8 +87,6 @@ Any generated output (models, plots, statistics etc.) will be saved in `out/`.
 | `sequence_shift`         | `10`              | Number of transitions sequences are allowed to overlap | Few sequences, some time-dependencies might not be captured | Too many similar sequences, overfitting |
 | `eta`                    | `0.9`             | For sequential learning: determines sequence priority. `0`: sequence prio = average instance prio, `1`: sequence prio = max instance prio. | ? | ? |
 | **Other**
-| `obs_buf_size`           | `2000`            | Number of transitions that fit into the (temporal) observations buffer per environment, max length of episodes saved to replay memory | Many wasted transitions, slow training progress, too strong focus on late-game transitions | RAM out of memory, too weak focus on late-game transitions |
-| `mem_size`               | `4000000`         | Number of transitions that fit into the replay memory | Overfitting to recent observations | RAM out of memory, too old transitions in replays => in case of RNNs can lead to _recurrent state staleness_ due to representational drift; large computation overhead due to replay sampling |
 |                          |                   |  |  |  |
 
 

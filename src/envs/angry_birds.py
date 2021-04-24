@@ -241,7 +241,7 @@ class AngryBirds(ParallelEnvironment):
 
     def get_state_shapes(self):
         image_state_shape = (STATE_PIXEL_RES, STATE_PIXEL_RES, 3)
-        numerical_state_shape = 0
+        numerical_state_shape = (0,)
         return [image_state_shape, numerical_state_shape]
 
     def get_number_of_actions(self):

@@ -8,7 +8,7 @@ from src.utils.utils import finalize_plot, user_agrees_to, sec2hhmmss, num2text,
     data2pickle, pickle2data
 from src.envs.env import Environment
 from src.utils.logger import Logger
-from src.utils.mem import ReplayMemory
+from src.mem.mem import ReplayMemory
 from src.utils.text_sty import orange, yellow, red, bold
 from skimage.measure import block_reduce
 
@@ -40,12 +40,10 @@ class Statistics:
     WINDOW_SIZE_CYCLES = 10
     EXTREME_LOSS_FACTOR = 1000
 
-    def __init__(self, env_type: Environment = None, env: Environment = None,
-                 memory: ReplayMemory = None, log_path=None):
+    def __init__(self, env_type: Environment = None, env: Environment = None, log_path=None):
         assert env_type is not None or env is not None
         self.env_type = type(env) if env_type is None else env_type
         self.env = env
-        self.memory = memory
         if log_path is not None:
             self.logger = Logger(log_path, self.EXTREME_LOSS_FACTOR, self.WINDOW_SIZE_CYCLES)
         else:
@@ -76,7 +74,7 @@ class Statistics:
         self.computation_timer = time.time()
         self.timer_started = True
 
-    def denote_episode_stats(self, ret, score, t, win):
+    def denote_episode_stats(self, ret, score, t, win, memory):
         assert self.timer_started
 
         if self.episode_ptr == len(self.episode_stats):
@@ -94,13 +92,13 @@ class Statistics:
         self.episode_ptr += 1
         self.current_run_trans_no += t
 
-        if new_return_record and self.memory is not None and \
+        """if new_return_record and memory is not None and \
                 self.logger is not None and self.env is not None:
-            transition_text = self.memory.get_trans_text(self.memory.get_length() - 1, self.env)
-            self.logger.log_new_record(ret, transition_text)
+            transition_text = memory.get_trans_text(memory.get_num_transitions() - 1, self.env)
+            self.logger.log_new_record(ret, transition_text)"""
 
     def denote_learning_stats(self, loss, individual_losses, learning_rate, trans_ids, predictions,
-                              targets, env):
+                              targets, env, memory):
         assert self.timer_started
 
         if self.cycle_ptr == len(self.cycle_stats):
@@ -111,7 +109,7 @@ class Statistics:
         self.cycle_stats[self.cycle_ptr] = [trans, seconds, loss, learning_rate]
         self.cycle_ptr += 1
 
-        self.log_extreme_losses(individual_losses, trans_ids, predictions, targets, env)
+        self.log_extreme_losses(individual_losses, trans_ids, predictions, targets, env, memory)
 
     def get_num_episodes(self):
         return self.episode_ptr
@@ -325,7 +323,7 @@ class Statistics:
                 return True
         return False
 
-    def print_stats(self, par_step, total_par_steps, done_transitions, print_stats_period, epsilon: int):
+    def print_stats(self, par_step, total_par_steps, print_stats_period, epsilon: int):
         assert self.timer_started
         comp_time = time.time() - self.computation_timer
         total_time = time.time() - self.total_timer
@@ -333,7 +331,6 @@ class Statistics:
         ma_episode_size = self.WINDOW_SIZE_EPISODES
         ma_cycle_size = self.WINDOW_SIZE_CYCLES
 
-        # avg_return = get_moving_avg(self.get_final_returns(), ma_episode_size)
         ma_score = get_moving_avg_val(self.get_scores(), ma_episode_size)
         ma_loss = get_moving_avg_val(self.get_losses(), ma_cycle_size)
         self.ma_score_record = np.max((self.ma_score_record, ma_score))
@@ -342,7 +339,7 @@ class Statistics:
         ma_text = num2text(ma_episode_size)
 
         ep = num2text(self.get_num_episodes())
-        trans = num2text(done_transitions)
+        trans = num2text(self.get_current_transition())
         cyc = num2text(self.get_num_cycles())
 
         stats_text = "\n" + bold("Parallel step %d/%d" % (par_step, total_par_steps)) + \
@@ -383,7 +380,7 @@ class Statistics:
 
         self.computation_timer = time.time()
 
-    def plot_stats(self, out_path):
+    def plot_stats(self, memory: ReplayMemory, out_path):
         self.plot_scores(out_path)
         self.plot_returns(out_path)
         if self.env_type.TIME_RELEVANT:
@@ -392,9 +389,11 @@ class Statistics:
             self.plot_wins(out_path)
         self.plot_learning_rates(out_path)
         self.plot_loss(out_path)
-        self.plot_priorities(out_path)
+        priorities = memory.get_priorities().flatten()
+        self.plot_priorities(priorities, out_path)
+        self.plot_score_dist(out_path)
 
-    def plot_real_time(self, y, y_records, title, y_label, out_path):
+    def plot_real_time(self, y, y_records, title, y_label, out_path, show):
         transitions = self.get_episode_transitions()
         add_charts(x_lsts=[transitions],
                    y_lsts=[y],
@@ -409,25 +408,25 @@ class Statistics:
                       y_label=y_label,
                       out_path=out_path,
                       legend=True,
-                      show=True)
+                      show=show)
 
     def plot_scores(self, out_path):
         scores = self.get_scores()
         if len(scores) > 0:
             self.plot_real_time(y=scores, y_records=self.get_score_records(), title="Score history",
-                                y_label="Score", out_path=out_path + "scores.png")
+                                y_label="Score", out_path=out_path + "scores.png", show=True)
 
     def plot_returns(self, out_path):
         returns = self.get_returns()
         if len(returns) > 0:
             self.plot_real_time(y=returns, y_records=self.get_return_records(), title="Return history",
-                                y_label="Return", out_path=out_path + "returns.png")
+                                y_label="Return", out_path=out_path + "returns.png", show=False)
 
     def plot_times(self, out_path):
         times = self.get_times()
         if len(times) > 0:
             self.plot_real_time(y=times, y_records=self.get_time_records(), title="Time history",
-                                y_label="Episode length", out_path=out_path + "times.png")
+                                y_label="Episode length", out_path=out_path + "times.png", show=False)
 
     def plot_wins(self, out_path):
         plot_moving_average(self.get_wins(),
@@ -453,15 +452,22 @@ class Statistics:
                             out_path=out_path + "loss.png",
                             logarithmic=True)
 
-    def plot_priorities(self, out_path):
-        if self.memory is not None:
-            plt.hist(self.memory.get_priorities(), range=None, bins=100)
-            finalize_plot(title="Transition priorities in experience set",
-                          x_label="Priority value",
-                          y_label="Number of transitions",
-                          out_path=out_path + "priorities.png")
+    def plot_priorities(self, priorities, out_path):
+        plt.hist(priorities, range=None, bins=100)
+        finalize_plot(title="Transition priorities in experience set",
+                      x_label="Priority value",
+                      y_label="Number of transitions",
+                      out_path=out_path + "priorities.png")
 
-    def log_extreme_losses(self, individual_losses, trans_ids, predictions, targets, env):
+    def plot_score_dist(self, out_path):
+        scores = self.get_scores()
+        plt.hist(scores[-1000:], range=None, bins=20)
+        finalize_plot(title="Recent 1000 episode's score distribution",
+                      x_label="Score",
+                      y_label="Number of episodes",
+                      out_path=out_path + "score_dist.png")
+
+    def log_extreme_losses(self, individual_losses, trans_ids, predictions, targets, env, memory):
         if self.logger is None:
             return
         moving_avg_loss = get_moving_avg_val(self.get_losses(), self.WINDOW_SIZE_CYCLES)
@@ -475,7 +481,7 @@ class Statistics:
                                                               targets[extreme_loss]):
                     self.logger.log_extreme_loss(self.get_num_cycles(), loss, moving_avg_loss,
                                                  str(prediction), str(target),
-                                                 self.memory.get_trans_text(trans_id, env) + "\n")
+                                                 memory.get_trans_text(trans_id, env) + "\n")
 
 
 def get_moving_avg_val(values, window_size):

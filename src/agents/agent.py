@@ -5,9 +5,9 @@ os.environ['TF_CPP_MIN_LOG_LEVEL'] = "2"  # let TF only print errors
 import tensorflow as tf
 import numpy as np
 
-from src.utils import ReplayMemory, Statistics, ParamScheduler, Observations, \
-    copy_object_with_config, plot_highscores, config2text, ask_to_override_model, config2json, json2config, \
-    remove_folder, log_model_graph
+from src.utils import Statistics, ParamScheduler, copy_object_with_config, plot_highscores, config2text,\
+    ask_to_override_model, config2json, json2config, remove_folder, log_model_graph
+from src.mem.mem import ReplayMemory
 from src.envs.env import ParallelEnvironment
 from src.agents.comp import *
 
@@ -22,9 +22,8 @@ class Agent:
     """Deep Q-Network (DQN) agent for playing Tetris, Snake or other games"""
 
     def __init__(self, env: ParallelEnvironment, stem_network: StemNetwork, q_network: QNetwork,
-                 name, replay_batch_size, n_step=1, sequence_shift=None, eta=0.9,
+                 name, replay_batch_size,
                  use_double=True, use_distributed=True,
-                 obs_buf_size=100, mem_size=10000,
                  use_pretrained=False, override=False, seed=None):
         """Constructor
         :param env: The (instantiated) environment in which the agent acts
@@ -80,17 +79,9 @@ class Agent:
         self.training_loss_fn = tf.keras.losses.MeanSquaredError(reduction=tf.keras.losses.Reduction.NONE)
         self.training_loss_metric = tf.keras.metrics.MeanSquaredError()
 
-        # Buffers, memory, and statistics
-        self.obs_buf_size = obs_buf_size
-        self.mem_size = mem_size
-        self.memory = ReplayMemory(memory_size=self.mem_size,
-                                   state_shape=self.state_shape,
-                                   n_step=n_step,
-                                   hidden_state_shape=self.stem_network.get_hidden_state_shape(),
-                                   sequence_len=self.sequence_len,
-                                   sequence_shift=sequence_shift,
-                                   eta=eta)
-        self.stats = Statistics(env=self.env, memory=self.memory, log_path=self.out_path)
+        # Memory and statistics
+        self.memory = None
+        self.stats = Statistics(env=self.env, log_path=self.out_path)
 
         self.save_config()
         print('DQN agent initialized.')
@@ -131,6 +122,16 @@ class Agent:
         else:
             return self.online_learner
 
+    def init_replay_memory(self, memory_size, n_step, sequence_shift, eta):
+        return ReplayMemory(size=memory_size,
+                            state_shapes=self.state_shape,
+                            n_step=n_step,
+                            num_par_envs=self.env.num_par_inst,
+                            hidden_state_shapes=self.stem_network.get_hidden_state_shape(),
+                            sequence_len=self.sequence_len,
+                            sequence_shift=sequence_shift,
+                            eta=eta,)
+
     def load_pretrained_model(self):
         pretrained_path = "out/" + self.env.NAME + "/pretrained"
         if not os.path.exists(pretrained_path):
@@ -160,6 +161,8 @@ class Agent:
                  target_sync_period, actor_sync_period,
                  gamma, epsilon: ParamScheduler,
                  use_mc_return, alpha,
+                 memory_size=1000000,
+                 n_step=1, sequence_shift=None, eta=0.9,
                  verbose=False):
         """The agent's main training routine.
 
@@ -178,6 +181,10 @@ class Agent:
         :param epsilon: Epsilon class, probability for random shot (epsilon greedy policy)
         :param use_mc_return: If True, uses Monte Carlo return targets instead of n-step TD targets
         :param alpha: For Prioritized Experience Replay: the larger alpha the stronger prioritization
+        :param memory_size:
+        :param n_step:
+        :param sequence_shift:
+        :param eta:
         :param verbose:
         """
 
@@ -185,13 +192,12 @@ class Agent:
         self.epsilon = epsilon
         self.use_mc_return = use_mc_return
 
-        # Save all hyperparameters in txt file
-        self.write_hyperparams_file(num_parallel_steps, replay_period, replay_size_multiplier, target_sync_period,
-                                    alpha, gamma)
+        # Init replay memory
+        self.memory = self.init_replay_memory(memory_size, n_step, sequence_shift, eta)
 
-        # Initialize observations buffer with fixed size
-        obs = Observations(self.obs_buf_size, self.num_par_envs,
-                           self.state_shape, self.stem_network.get_hidden_state_shape())
+        # Save all hyperparameters in txt file
+        self.write_hyperparams_file(num_parallel_steps, replay_period, replay_size_multiplier,
+                                    target_sync_period, alpha, gamma)
 
         new_transitions = 0
 
@@ -201,6 +207,7 @@ class Agent:
         print("DQN agent starts practicing...")
 
         self.stats.start_timer()
+        returns = np.zeros(self.num_par_envs)
 
         for i in range(1, num_parallel_steps + 1):
             done_transitions = (i - 1) * self.num_par_envs
@@ -212,37 +219,31 @@ class Agent:
             actions, _ = self.plan_epsilon_greedy(states, self.epsilon.get_value(done_transitions))
 
             # Perform actions, observe new environment state, level score and application state
-            rewards, scores, game_overs, times, wins = self.env.step(actions)
+            rewards, scores, terminals, times, wins = self.env.step(actions)
+            returns += rewards
 
             # Save observations
-            obs.save_observations(states, hidden_states, actions, scores, rewards, times)
+            new_transitions += self.memory.memorize_observations(states, hidden_states, actions, scores,
+                                                                 rewards, terminals, gamma)
 
             # Handle finished envs
-            fin_env_ids = np.where(game_overs)[0]
+            if np.any(terminals):
+                fin_env_ids = np.where(terminals)[0]
 
-            if len(fin_env_ids):
-                # For all finished episodes, save their observations in the replay memory
-                for env_id in fin_env_ids:
-                    obs_states, obs_hidden_states, obs_actions, obs_score_gains, obs_rewards, obs_times \
-                        = obs.get_observations(env_id)
-                    self.memory.memorize(obs_states, obs_hidden_states, obs_actions, obs_score_gains, obs_rewards,
-                                         gamma)
-
-                    obs_score, obs_return = obs.get_performance(env_id)
-                    self.stats.denote_episode_stats(obs_return, obs_score, obs_times[-1], wins[env_id])
-
-                    new_transitions += len(obs_rewards)
+                # Save stats
+                for idx in fin_env_ids:
+                    self.stats.denote_episode_stats(returns[idx], scores[idx], times[idx], wins[idx], self.memory)
 
                 # Reset all finished envs and update their corresponding current variables
                 self.env.reset_for(fin_env_ids)
-                obs.begin_new_episode_for(fin_env_ids)
+                returns[fin_env_ids] = 0
 
                 # Reset actor's LSTM states (if any) to zero
                 self.reset_cell_states_for(self.actor, fin_env_ids)
 
             # Every X episodes, plot informative graphs
             if i % PLOT_SAVE_STATS_PERIOD == 0:
-                self.stats.plot_stats(self.out_path)
+                self.stats.plot_stats(self.memory, self.out_path)
                 self.stats.save(self.out_path)
 
             # If environment has test levels, test on it
@@ -260,8 +261,8 @@ class Agent:
                 self.save(overwrite=True, checkpoint=True, checkpoint_no=self.stats.get_num_episodes())
 
             # Cut off old experience to reduce buffer load
-            if self.memory.get_length() > 0.95 * self.mem_size:
-                self.memory.delete_first(n=int(0.2 * self.mem_size))
+            if self.memory.get_num_transitions() > 0.95 * self.memory.get_size():
+                self.memory.delete_first(n=int(0.2 * self.memory.get_size()))
 
             # Synchronize target and online network every sync_period levels
             if self.double and i % target_sync_period == 0:
@@ -272,8 +273,8 @@ class Agent:
                 self.actor.set_weights(self.online_learner.get_weights())
 
             if i % PRINT_STATS_PERIOD == 0:
-                self.stats.print_stats(i, num_parallel_steps, done_transitions,
-                                       PRINT_STATS_PERIOD, self.epsilon.get_value(done_transitions))
+                self.stats.print_stats(i, num_parallel_steps, PRINT_STATS_PERIOD,
+                                       self.epsilon.get_value(done_transitions))
 
         self.save()
         self.stats.logger.close()
@@ -309,10 +310,10 @@ class Agent:
         """Uses batches of single instances to learn on."""
 
         # Obtain a list of useful transitions to learn on
-        trans_ids, probabilities = self.memory.recall_single_transitions(num_instances, alpha)
+        trans_ids, probabilities = self.memory.recall(num_instances, alpha)
 
         # Obtain total number of experienced transitions
-        exp_len = self.memory.get_length()
+        exp_len = self.memory.get_num_transitions()
 
         # Get list of transitions
         states, _, actions, n_step_rewards, n_step_mask, next_states, _, terminals = \
@@ -356,7 +357,7 @@ class Agent:
                                                         sample_weights=sample_weights)
 
         self.stats.denote_learning_stats(loss, individual_losses, self.optimizer.learning_rate.numpy(),
-                                         trans_ids, predictions, targets, self.env)
+                                         trans_ids, predictions, targets, self.env, self.memory)
 
         return len(trans_ids)
 
@@ -423,7 +424,7 @@ class Agent:
                                                         mask=mask)
 
         self.stats.denote_learning_stats(loss, individual_losses, self.optimizer.learning_rate.numpy(),
-                                         trans_ids, predictions, targets, self.env)
+                                         trans_ids, predictions, targets, self.env, self.memory)
 
         return np.prod(trans_ids.shape)
 
@@ -455,7 +456,7 @@ class Agent:
                     self.online_learner.reset_states()
                     self.online_learner.stem_model.set_cell_states(hidden_states_b)
 
-                batch_individual_losses, batch_out =\
+                batch_individual_losses, batch_out = \
                     self.train_step(x_2d_b, x_1d_b, y_b, sample_weight_b, mask_b)
 
                 if epoch == epochs - 1:
@@ -546,7 +547,7 @@ class Agent:
         self.optimizer.learning_rate.assign(new_lr)
 
     def learn_entire_experience(self, batch_size, epochs, gamma, alpha):
-        experience_length = self.memory.get_length()
+        experience_length = self.memory.get_num_transitions()
         self.learn_instances(experience_length, gamma, batch_size, epochs, alpha)
 
     def test_performance(self, num_levels=100):
@@ -662,12 +663,7 @@ class Agent:
         stem_config = self.stem_network.get_config()
         q_config = self.q_network.get_config()
         agent_config = {"replay_batch_size": self.replay_batch_size,
-                        "n_step": self.memory.n_step,
-                        "sequence_shift": self.memory.sequence_shift,
                         "use_double": self.double,
-                        "obs_buf_size": self.obs_buf_size,
-                        "mem_size": self.mem_size,
-                        "eta": self.memory.eta,
                         "seed": self.seed}
 
         config = {"stem_model_class": self.stem_network.__class__.__name__,
@@ -738,9 +734,6 @@ class Agent:
     def forget(self):
         self.memory = ReplayMemory(**self.memory.get_config())
 
-    def print_transitions(self, ids):
-        self.memory.print_trans_from(ids, self.env)
-
     def write_hyperparams_file(self, num_parallel_steps, replay_period, replay_size_multiplier, sync_period,
                                alpha, gamma):
         hyperparams_file = open(self.out_path + "hyperparams.txt", "w+")
@@ -751,11 +744,7 @@ class Agent:
                "\nsync_period: %d" % (sync_period if self.double else -1) + \
                "\n\nalpha: %f" % alpha + \
                "\ngamma: %f" % gamma + \
-               "\nn_step: %d" % self.memory.n_step + \
                "\nuse_mc_return: " + str(self.use_mc_return) + \
-               "\neta: %f" % self.memory.eta + \
-               "\nobs_buf_size: %d" % self.obs_buf_size + \
-               "\nexp_buf_size: %d" % self.mem_size + \
                "\nseed: %d" % self.seed
 
         text += "\n\nSTEM MODEL PARAMETERS:"
@@ -769,6 +758,9 @@ class Agent:
 
         text += "\n\nEPSILON:"
         text += config2text(self.epsilon.get_config())
+
+        text += "\n\nMEMORY:"
+        text += config2text(self.memory.get_config())
 
         hyperparams_file.write(text + "\n\n")
         self.online_learner.summary(print_fn=lambda x: hyperparams_file.write(x + '\n'))

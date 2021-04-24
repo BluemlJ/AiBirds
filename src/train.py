@@ -18,11 +18,11 @@ replay_epochs = 1
 replay_batch_size = 1024
 target_sync_period = 128
 actor_sync_period = replay_period
-learning_rate = ParamScheduler(init_value=0.00008, warmup_transitions=400000)
-# learning_rate = ParamScheduler(init_value=0.0005, decay_mode="step", milestones=[5000000, 50000000],
-#                                milestone_factor=0.4)
+# learning_rate = ParamScheduler(init_value=0.00008, warmup_transitions=400000)
+learning_rate = ParamScheduler(init_value=0.0005, decay_mode="step", milestones=[5000000, 50000000],
+                               milestone_factor=0.4)
 
-# Target return
+# Learning target
 gamma = 0.999
 n_step = 1
 use_mc_return = False
@@ -46,7 +46,6 @@ q_network = comp.q_network.DoubleQNetwork(latent_v_dim, latent_a_dim)
 epsilon = ParamScheduler(init_value=0, decay_mode="exp", half_life_period=700000)
 
 # Miscellaneous
-obs_buf_size = 2000  # number of transitions that can fit into the observations buffer per env, = max episode length +1
 exp_buf_size = 4000000  # total number of transitions that can fit into the agent's replay memory
 
 # load_and_play("fruit_spawning", Snake)
@@ -54,17 +53,12 @@ exp_buf_size = 4000000  # total number of transitions that can fit into the agen
 agent = Agent(env=env,
               stem_network=stem_model,
               q_network=q_network,
-              name="new_fruit_spawning_2",
+              name="half_reward",
               replay_batch_size=replay_batch_size,
-              n_step=n_step,
-              sequence_shift=sequence_shift,
-              eta=eta,
               use_double=False,
-              obs_buf_size=obs_buf_size,
-              mem_size=exp_buf_size,
               use_pretrained=False,
               seed=seed)
-agent.restore("new_fruit_spawning")
+# agent.restore("new_fruit_spawning")
 
 agent.practice(num_parallel_steps=1000000,
                replay_period=replay_period,
@@ -77,6 +71,10 @@ agent.practice(num_parallel_steps=1000000,
                epsilon=epsilon,
                use_mc_return=use_mc_return,
                alpha=0.7,
+               memory_size=exp_buf_size,
+               n_step=n_step,
+               sequence_shift=sequence_shift,
+               eta=eta,
                verbose=False)
 
 '''print("\nTerminals:")

@@ -486,13 +486,17 @@ class ChainBomb(ParallelEnvironment, ChainBombBase):
 
     def get_state_shapes(self):
         image_state_shape = (self.height, self.width, 8)
-        numerical_state_shape = 5 * 6
+        numerical_state_shape = (5 * 6,)
         return [image_state_shape, numerical_state_shape]
 
     def get_config(self):
         config = {"height": self.height,
                   "width": self.width}
         return super(ChainBomb, self).get_config().update(config)
+
+    def state2text(self, state):
+        state_2d, state_1d = state
+        return self.state_2d_to_text(state_2d) + "\n" + self.state_1d_to_text(state_1d)
 
     def state_2d_to_text(self, state):
         grid_height = state.shape[0]

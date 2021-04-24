@@ -153,10 +153,6 @@ class MultiAgentEnvironment(Environment):
         """Renders the environment inside a PyGame window."""
         pass
 
-    def state_2d_to_text(self, state_2d):
-        """Returns a simple textual visualization of a given image state."""
-        return ""
-
-    def state_1d_to_text(self, state_1d):
-        """Returns a simple textual visualization of a given numerical state."""
+    def state2text(self, state):
+        """Returns a simple, human-readable, textual visualization of a given state."""
         return ""

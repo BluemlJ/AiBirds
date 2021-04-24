@@ -217,7 +217,7 @@ class Tetris(ParallelEnvironment):
 
     def get_state_shapes(self):
         image_state_shape = (self.height, self.width, 2)
-        numerical_state_shape = 0
+        numerical_state_shape = (0,)
         return [image_state_shape, numerical_state_shape]
 
     def get_config(self):
@@ -346,6 +346,10 @@ class Tetris(ParallelEnvironment):
 
         pygame.display.flip()
         # self.clock.tick(self.speed)
+
+    def state2text(self, state):
+        state_2d, state_1d = state
+        return self.state_2d_to_text(state_2d) + "\n" + self.state_1d_to_text(state_1d)
 
     def state_2d_to_text(self, state):
         lying_block_grid = state[:, :, 0]

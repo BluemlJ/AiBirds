@@ -219,7 +219,7 @@ def log_model_graph(model, input_shape, log_dir="tensorboard/graphs/"):
 
     input_shape_2d, input_shape_1d = input_shape
     input_2d = tf.random.uniform((1,) + input_shape_2d)
-    input_1d = tf.random.uniform((1,) + (input_shape_1d,))
+    input_1d = tf.random.uniform((1,) + input_shape_1d)
 
     tf.summary.trace_on(graph=True, profiler=True)
     trace_fn([input_2d, input_1d])
@@ -238,3 +238,7 @@ def bool2num(arr):
 def num2bool(arr):
     """Maps a float numpy array to a boolean array, where 1 -> True, else False."""
     return arr == 1
+
+
+def shapes2arraylist(shapes):
+    return [np.zeros(shape=shape, dtype="float32") for shape in shapes]
