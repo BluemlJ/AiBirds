@@ -247,10 +247,7 @@ class ChainBomb(ParallelEnvironment, ChainBombBase):
         self.reset_for(np.arange(self.num_par_inst), lvl_no)
 
     def reset_for(self, ids, lvl_no=None):
-        self.scores[ids] = 0
-        self.times[ids] = 0
-        self.game_overs[ids] = False
-        self.wins[ids] = False
+        super(ChainBomb, self).reset_for(ids)
 
         if self.mode == self.TRAIN_MODE:
             self.delete_all_objects(ids)

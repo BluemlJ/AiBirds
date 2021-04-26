@@ -69,11 +69,9 @@ class Tetris(ParallelEnvironment):
             self.init_gui()
 
     def reset(self):
-        self.game_overs[:] = False
-        self.fields[:] = 0
-        self.times[:] = 0
-        self.scores[:] = 0
+        super(Tetris, self).reset()
 
+        self.fields[:] = 0
         self.fb_fields[:] = 0
         self.fb_shapes[:] = 0
         self.fb_anchors[:] = 0
@@ -81,11 +79,9 @@ class Tetris(ParallelEnvironment):
         self.spawn_falling_blocks()
 
     def reset_for(self, ids):
-        self.game_overs[ids] = False
-        self.fields[ids] = 0
-        self.times[ids] = 0
-        self.scores[ids] = 0
+        super(Tetris, self).reset_for(ids)
 
+        self.fields[ids] = 0
         self.fb_fields[ids] = 0
         self.fb_shapes[ids] = 0
         self.fb_anchors[ids] = 0

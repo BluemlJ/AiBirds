@@ -67,9 +67,7 @@ class Snake(ParallelEnvironment):
         self.snake_body_fields[:] = False
         self.fruit_fields[:] = False
 
-        self.scores[:] = 0
-        self.times[:] = 0
-        self.game_overs[:] = False
+        super(Snake, self).reset()
         self.times_since_last_fruit[:] = 0
 
         self.__init_env(range(self.num_par_inst))
@@ -85,9 +83,7 @@ class Snake(ParallelEnvironment):
         self.snake_body_fields[ids] = False
         self.fruit_fields[ids] = False
 
-        self.scores[ids] = 0
-        self.times[ids] = 0
-        self.game_overs[ids] = False
+        super(Snake, self).reset_for(ids)
         self.times_since_last_fruit[ids] = 0
 
         self.__init_env(ids)
@@ -129,13 +125,13 @@ class Snake(ParallelEnvironment):
         self.scores = self.snake_bodies.get_lengths()
 
         rewards = np.zeros(self.num_par_inst)
-        rewards[fruit_found] = 0.5  # np.log2((self.scores[fruit_found] + 2) / (self.scores[fruit_found] + 1))
-        # rewards += self.times_since_last_fruit / 1800  # TODO: Test
+        rewards[fruit_found] = 1  # np.log2((self.scores[fruit_found] + 2) / (self.scores[fruit_found] + 1))
+        # rewards += self.times_since_last_fruit / 1800
         # Encourage faster fruit gathering: doesn't work
         # rewards[:] -= 0.005  # rotten fruit
 
         game_won = self.scores == self.max_score
-        rewards[game_won] = 0.5  # evens out the death penalty
+        rewards[game_won] = 1  # evens out the death penalty
         self.game_overs[game_won] = True
 
         self.times_since_last_fruit[fruit_found] = 0
@@ -144,7 +140,7 @@ class Snake(ParallelEnvironment):
 
         rewards[self.game_overs] -= 1
 
-        return rewards, self.scores, self.game_overs, self.times, self.wins
+        return rewards, self.scores, self.game_overs, self.times, game_won
 
     def update_snake_movement_orientation(self, actions):
         action_valid = (self.snake_movement_orientations - actions) % 2 != 0

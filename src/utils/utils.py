@@ -207,7 +207,7 @@ def setup_hardware(use_gpu=True, gpu_memory_limit=None):
         tf.config.experimental.set_virtual_device_configuration(gpus[0], memory_config)
 
 
-def log_model_graph(model, input_shape, log_dir="tensorboard/graphs/"):
+def log_model_graph(model, input_shapes, log_dir="tensorboard/graphs/"):
     if os.path.exists(log_dir):
         remove_folder(log_dir)
 
@@ -217,12 +217,9 @@ def log_model_graph(model, input_shape, log_dir="tensorboard/graphs/"):
 
     writer = tf.summary.create_file_writer(log_dir)
 
-    input_shape_2d, input_shape_1d = input_shape
-    input_2d = tf.random.uniform((1,) + input_shape_2d)
-    input_1d = tf.random.uniform((1,) + input_shape_1d)
-
+    dummy_input = [tf.random.uniform((1,) + input_shape) for input_shape in input_shapes]
     tf.summary.trace_on(graph=True, profiler=True)
-    trace_fn([input_2d, input_1d])
+    trace_fn(dummy_input)
     with writer.as_default():
         tf.summary.trace_export(
             name="DQN_model",

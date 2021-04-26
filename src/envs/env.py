@@ -1,6 +1,6 @@
 import numpy as np
 from abc import ABCMeta
-from typing import Tuple
+from typing import List
 
 
 class Environment(metaclass=ABCMeta):
@@ -25,19 +25,24 @@ class ParallelEnvironment(Environment, metaclass=ABCMeta):
         self.num_par_inst = num_par_inst
         self.actions = actions  # List of action names (strings)
 
-        self.game_overs = np.zeros(shape=num_par_inst, dtype="bool")
-        self.rewards = np.zeros(shape=num_par_inst, dtype="float32")
         self.scores = np.zeros(shape=num_par_inst, dtype="int32")
         self.times = np.zeros(shape=num_par_inst, dtype="uint16")
+        self.game_overs = np.zeros(shape=num_par_inst, dtype="bool")
         self.wins = np.zeros(shape=num_par_inst, dtype="bool")  # for envs with levels
 
     def reset(self):
         """Resets all environments to their initial state."""
-        pass
+        self.scores[:] = 0
+        self.times[:] = 0
+        self.game_overs[:] = False
+        self.wins[:] = False
 
     def reset_for(self, ids):
         """Resets selected environments to their initial state."""
-        pass
+        self.scores[ids] = 0
+        self.times[ids] = 0
+        self.game_overs[ids] = False
+        self.wins[ids] = False
 
     def step(self, actions):
         """The given actions are executed in the environment and the environment
@@ -50,17 +55,19 @@ class ParallelEnvironment(Environment, metaclass=ABCMeta):
             times: an int array indicating for each env the number of steps since the last reset
             wins: a Boolean array indicating for each env if the episode was won (if defined)
         """
-        pass
+        raise NotImplementedError
 
-    def get_states(self) -> Tuple[np.array, np.array]:
-        """Returns a 2D and a 1D state representation for all parallel environments."""
-        pass
+    def get_states(self) -> List[np.array]:
+        """Returns state representations for all parallel environments. Each element of the
+        returned list is a NumPy array, containing the same-shape state components of all
+        parallel env instances."""
+        raise NotImplementedError
 
     def get_state_shapes(self):
         """Returns two arguments:
         image_state_shape: dimensions of the image state matrix in channel-last order
         numerical_state_shape: length of the numerical state vector"""
-        pass
+        raise NotImplementedError
 
     def get_number_of_actions(self):
         """Returns the number of possible actions performable in the environment. There
@@ -69,26 +76,18 @@ class ParallelEnvironment(Environment, metaclass=ABCMeta):
 
     def render(self):
         """Renders the environment inside a PyGame window."""
-        pass
-
-    def state_2d_to_text(self, state_2d):
-        """Returns a simple textual visualization of a given image state."""
-        return ""
-
-    def state_1d_to_text(self, state_1d):
-        """Returns a simple textual visualization of a given numerical state."""
-        return ""
+        raise NotImplementedError
 
     def state2text(self, state):
-        state_2d, state_1d = state
-        return self.state_2d_to_text(state_2d) + "\n" + self.state_1d_to_text(state_1d)
+        """Returns a simple textual visualization of a given state."""
+        return "State representation not implemented."
 
     def print_all_current_states(self):
-        states_2d, states_1d = self.get_states()
-        for env_id in range(len(states_2d)):
-            print("Environment %d:" % env_id)
-            print(self.state_2d_to_text(states_2d[env_id]) + "\n" +
-                  self.state_1d_to_text(states_1d[env_id]) + "\n")
+        states = self.get_states()
+        for env_id in self.num_par_inst:
+            state = [state_comps[env_id] for state_comps in states]
+            print("Environment instance %d:" % env_id)
+            print(self.state2text(state))
 
     def set_mode(self, mode):
         """Sets the level selection/generation mode."""
@@ -96,7 +95,7 @@ class ParallelEnvironment(Environment, metaclass=ABCMeta):
 
     def generate_pretrain_data(self, num_instances):
         """Generates a set of num_instances images which can be used for autoencoder pretraining."""
-        pass
+        raise NotImplementedError
 
     def has_test_levels(self):
         """Returns True if the env has dedicated test levels."""
@@ -109,7 +108,7 @@ class ParallelEnvironment(Environment, metaclass=ABCMeta):
         config = self.get_config()
         config.pop("num_par_inst")
         env_type = type(self)
-        return env_type(num_par_inst, **config)
+        return env_type(num_par_inst=num_par_inst, **config)
 
 
 class MultiAgentEnvironment(Environment):

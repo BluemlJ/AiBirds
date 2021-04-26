@@ -1,6 +1,6 @@
 from tensorflow.keras.layers import ReLU, Convolution2D, BatchNormalization, Flatten, Dense,\
     MaxPool2D, Concatenate, LSTM, TimeDistributed, Layer, Input
-from tensorflow.keras.initializers import GlorotNormal
+from tensorflow.keras.initializers import GlorotNormal, VarianceScaling
 from src.agents.comp.stem import StemNetwork
 
 
@@ -22,7 +22,7 @@ class TimeConvHead(Layer):
         return {}
 
 
-class ConvStemNetwork(StemNetwork):
+class StemNetwork2D1D(StemNetwork):
     def __init__(self, latent_dim):
         super().__init__(sequential=False)
         self.latent_dim = latent_dim
@@ -47,6 +47,40 @@ class ConvStemNetwork(StemNetwork):
         latent = Dense(self.latent_dim, activation="relu", name="latent")(concat)
 
         return [input_2d, input_1d], latent
+
+    def get_config(self):
+        return {"latent_dim": self.latent_dim}
+
+
+class StemNetwork2D(StemNetwork):
+    def __init__(self, latent_dim):
+        super().__init__(sequential=False)
+        self.latent_dim = latent_dim
+
+    def get_functional_graph(self, input_shapes, batch_size=None):
+        input_shape = input_shapes[0]
+        input = Input(shape=input_shape, name="input")
+
+        conv1 = Convolution2D(32, (6, 6), strides=4, padding='valid', activation="relu",
+                              kernel_initializer=VarianceScaling(scale=2),
+                              use_bias=False, name="conv_1")(input)
+        # pool1 = MaxPool2D((2, 2))(conv1)
+        conv2 = Convolution2D(64, (4, 4), strides=2, padding='valid', activation="relu",
+                              kernel_initializer=VarianceScaling(scale=2),
+                              use_bias=False, name="conv_2")(conv1)
+        # pool2 = MaxPool2D((2, 2))(conv2)
+        conv3 = Convolution2D(64, (3, 3), strides=1, padding='valid', activation="relu",
+                              kernel_initializer=VarianceScaling(scale=2),
+                              use_bias=False, name="conv_3")(conv2)
+        # pool3 = MaxPool2D((2, 2))(conv3)
+        conv4 = Convolution2D(self.latent_dim, (9, 6), strides=1, padding='valid', activation="relu",
+                              kernel_initializer=VarianceScaling(scale=2),
+                              use_bias=False, name="conv_4")(conv3)
+        # pool4 = MaxPool2D((2, 2))(conv4)
+        flat = Flatten(name='flat')(conv4)
+        latent = Dense(self.latent_dim, activation="relu", name="latent")(flat)
+
+        return [input], latent
 
     def get_config(self):
         return {"latent_dim": self.latent_dim}

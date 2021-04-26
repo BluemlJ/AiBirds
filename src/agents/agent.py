@@ -436,8 +436,7 @@ class Agent:
         if not self.sequential:
             hidden_states = len(x) * [None]
             mask = len(x) * [None]
-        x_2d, x_1d = x
-        train_dataset = (x_2d, x_1d, y, sample_weights, hidden_states, mask)
+        train_dataset = (*x, y, sample_weights, hidden_states, mask)
         train_dataset = tf.data.Dataset.from_tensor_slices(train_dataset).batch(batch_size)
         # train_dataset = train_dataset.shuffle(buffer_size=1024, seed=self.seed)
         predictions = np.zeros(y.shape)
@@ -450,14 +449,14 @@ class Agent:
                       ((epoch + 1), epochs, len(train_dataset)), flush=True, end="")
 
             # Iterate over the batches of the dataset.
-            for step, (x_2d_b, x_1d_b, y_b, sample_weight_b, hidden_states_b, mask_b) in enumerate(train_dataset):
+            for step, (*x, y_b, sample_weight_b, hidden_states_b, mask_b) in enumerate(train_dataset):
                 # Train on this batch
                 if self.sequential:
                     self.online_learner.reset_states()
                     self.online_learner.stem_model.set_cell_states(hidden_states_b)
 
                 batch_individual_losses, batch_out = \
-                    self.train_step(x_2d_b, x_1d_b, y_b, sample_weight_b, mask_b)
+                    self.train_step(x, y_b, sample_weight_b, mask_b)
 
                 if epoch == epochs - 1:
                     at_instance = step * batch_size
@@ -481,9 +480,9 @@ class Agent:
         return train_loss, individual_losses, predictions
 
     @tf.function
-    def train_step(self, x_2d, x_1d, y, sample_weight, mask_b):
+    def train_step(self, x, y, sample_weight, mask_b):
         with tf.GradientTape() as tape:
-            out = self.online_learner([x_2d, x_1d], training=True)
+            out = self.online_learner(x, training=True)
             weighted_losses = self.training_loss_fn(y, out, sample_weight=sample_weight)
             if self.sequential:
                 mask = tf.cast(mask_b, tf.float32)
@@ -519,7 +518,7 @@ class Agent:
             actions = np.random.randint(self.num_actions, size=self.num_par_envs)
             if self.sequential or output_return:  # Update hidden state
                 self.plan(states)
-            return actions, None
+            return actions, np.nan
         else:
             # Optimal action
             return self.plan(states)
@@ -608,7 +607,7 @@ class Agent:
 
             if verbose:
                 print("{:>11.2f}".format(ret) + " | " +
-                      "{:>13.2f}".format(pred_rets[0]) + " | " +
+                      # "{:>13.2f}".format(pred_rets) + " | " +
                       "{:>16s}".format(self.env.actions[action[0]]))
 
             # Perform action, observe new environment state, level score and application state
@@ -822,11 +821,11 @@ def load_model(model_name, env_type, checkpoint_no=None):
     return agent
 
 
-def load_and_play(model_name, env_type, checkpoint_no=None, mode=None):
+def load_and_play(model_name, env_type, checkpoint_no=None, mode=None, epsilon=0):
     agent = load_model(model_name, env_type, checkpoint_no)
     if mode is not None:
         agent.env.set_mode(mode)
-    agent.just_play(verbose=True)
+    agent.just_play(verbose=True, epsilon=epsilon)
 
 
 def load_and_test(model_name, env_type, checkpoint_no=None, mode=None, render=False):
