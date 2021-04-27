@@ -79,7 +79,7 @@ class ParallelEnvironment(Environment, metaclass=ABCMeta):
         raise NotImplementedError
 
     def state2text(self, state):
-        """Returns a simple textual visualization of a given state."""
+        """Returns a simple textual visualization of a given state. Input shape equals state_shapes."""
         return "State representation not implemented."
 
     def print_all_current_states(self):

@@ -237,5 +237,15 @@ def num2bool(arr):
     return arr == 1
 
 
-def shapes2arraylist(shapes):
+def shapes2arrays(shapes, preceded_by=None):
+    if preceded_by is not None:
+        shapes = [(*preceded_by, *shape) for shape in shapes]
     return [np.zeros(shape=shape, dtype="float32") for shape in shapes]
+
+
+def increase_last_dim(shapes, factor):
+    assert factor > 0
+    if factor == 1:
+        return shapes
+    else:
+        return [(*shape[:-1], shape[-1] * factor) for shape in shapes]

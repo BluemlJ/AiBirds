@@ -9,7 +9,7 @@ from src.utils.utils import finalize_plot, user_agrees_to, sec2hhmmss, num2text,
 from src.envs.env import Environment
 from src.utils.logger import Logger
 from src.mem.mem import ReplayMemory
-from src.utils.text_sty import orange, yellow, red, bold
+from src.utils.text_sty import orange, red, bold, print_info
 from skimage.measure import block_reduce
 
 # For comparison plots
@@ -323,12 +323,11 @@ class Statistics:
                 return True
         return False
 
-    def print_stats(self, par_step, total_par_steps, print_stats_period, epsilon: int):
+    def print_stats(self, par_step, total_par_steps, print_stats_period, epsilon: int, ma_episode_size):
         assert self.timer_started
         comp_time = time.time() - self.computation_timer
         total_time = time.time() - self.total_timer
 
-        ma_episode_size = self.WINDOW_SIZE_EPISODES
         ma_cycle_size = self.WINDOW_SIZE_CYCLES
 
         ma_score = get_moving_avg_val(self.get_scores(), ma_episode_size)
@@ -474,7 +473,7 @@ class Statistics:
         if moving_avg_loss > 0:
             extreme_loss = individual_losses > (moving_avg_loss * self.EXTREME_LOSS_FACTOR)
             if np.any(extreme_loss):
-                print(yellow("Extreme loss encountered!"))
+                print_info("Extreme loss encountered!")
                 for trans_id, loss, prediction, target in zip(trans_ids[extreme_loss],
                                                               individual_losses[extreme_loss],
                                                               predictions[extreme_loss],

@@ -5,7 +5,7 @@ from src.utils.text_sty import print_error
 
 
 class ReplayMemory:
-    def __init__(self, size, state_shapes, n_step, num_par_envs,
+    def __init__(self, size, state_shapes, n_step, num_par_envs, stack_size=1,
                  hidden_state_shapes=None, sequence_len=None, sequence_shift=None, eta=0.9):
         """A finite buffer for saving and sampling transitions.
 
@@ -14,6 +14,7 @@ class ReplayMemory:
         """
 
         self.n_step = n_step
+        self.stack_size = stack_size  # frame stacking
         self.seq_ptr = 0
 
         self.sequential = hidden_state_shapes is not None
@@ -132,7 +133,7 @@ class ReplayMemory:
     def get_transitions(self, trans_ids):
         """Returns views of transitions, selected by their given IDs (not indices!)."""
         trans_indices = self.id2idx(trans_ids)
-        return self.trans_buf.get_transitions(trans_indices, self.n_step)
+        return self.trans_buf.get_transitions(trans_indices, self.n_step, self.stack_size)
 
     def get_sequences(self, seq_ids):
         """Returns sequences of transitions."""

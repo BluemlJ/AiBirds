@@ -53,6 +53,8 @@ Any generated output (models, plots, statistics etc.) will be saved in `out/`.
 | **General**
 | `num_parallel_inst`      | `500`             | Number of simultaneously executed environments | Training overhead dominates computation time | Possibly worse sample complexity, GPU or RAM out of memory |
 | `num_parallel_steps`     | `1000000`         | Number of transitions done per parallel environments | Learning stops before agent performance is optimal | Wasted energy, overfitting |
+| **Model input**
+| `stack_size`             | `1`               | Number of recent frames to be stacked for input, useful for envs with time dependency like Breakout | Agent has "no feeling for time", bad performance on envs with time dependency | Unnecessary computation overhead |
 | **Learning target**
 | `gamma`                  | `0.999`           | Discount factor | Short-sighted strategy, early events dominate return | Far-sighted strategy, late events dominate return, target shift, return explosion |
 | `n_step`                 | `1`               | Number of steps used for Temporal Difference (TD) bootstrapping |  |  |
