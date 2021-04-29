@@ -117,12 +117,15 @@ class Snake(ParallelEnvironment):
         self.update_snake_movement_orientation(actions)
         fruit_found = self.snake_creep()
         self.snake_bodies.grow(fruit_found)
-        self.spawn_fruit(np.where(fruit_found)[0])
+
+        self.scores = self.snake_bodies.get_lengths()
+        game_won = self.scores == self.max_score
+
+        self.spawn_fruit(np.where(fruit_found & ~game_won)[0])
 
         # Compute statistics
         self.times[~ self.game_overs] += 1
         self.times_since_last_fruit += 1
-        self.scores = self.snake_bodies.get_lengths()
 
         rewards = np.zeros(self.num_par_inst)
         rewards[fruit_found] = 1  # np.log2((self.scores[fruit_found] + 2) / (self.scores[fruit_found] + 1))
@@ -130,7 +133,6 @@ class Snake(ParallelEnvironment):
         # Encourage faster fruit gathering: doesn't work
         # rewards[:] -= 0.005  # rotten fruit
 
-        game_won = self.scores == self.max_score
         rewards[game_won] = 1  # evens out the death penalty
         self.game_overs[game_won] = True
 
@@ -138,7 +140,7 @@ class Snake(ParallelEnvironment):
         starved = self.times_since_last_fruit >= MAX_TIME_WITHOUT_SCORE
         self.game_overs[starved] = True
 
-        rewards[self.game_overs] -= 1
+        rewards[self.game_overs] -= 1  # + 0.75 * self.scores[self.game_overs]
 
         return rewards, self.scores, self.game_overs, self.times, game_won
 

@@ -46,12 +46,12 @@ epsilon = ParamScheduler(init_value=0, decay_mode="exp", half_life_period=30000)
 
 # Miscellaneous
 exp_buf_size = 4000000  # total number of transitions that can fit into the agent's replay memory
-stack_size = 1
+stack_size = 4
 
 agent = Agent(env=env,
               stem_network=stem_model,
               q_network=q_network,
-              name="1_stacked_bs_1024",
+              name="4_stacked",
               replay_batch_size=replay_batch_size,
               stack_size=stack_size,
               use_double=False,

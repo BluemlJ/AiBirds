@@ -63,13 +63,13 @@ class ReplayMemory:
             return seq_ids, probabilities
 
     def get_size(self):
-        return self.trans_buf.buffer_len * self.trans_buf.par_inst
+        return self.trans_buf.buffer_len * self.trans_buf.num_par_inst
 
     def get_num_transitions(self):
         return self.trans_buf.get_num_transitions()
 
     def get_num_learnable_transitions(self):
-        return max(0, self.trans_buf.get_num_transitions() - self.n_step * self.trans_buf.par_inst)
+        return max(0, self.trans_buf.get_num_transitions() - self.n_step * self.trans_buf.num_par_inst)
 
     def get_num_sequences(self):
         if self.sequential:
@@ -149,8 +149,8 @@ class ReplayMemory:
         trans_indices = self.id2idx(trans_ids)
         self.trans_buf.set_priorities(trans_indices, priorities)
 
-    def print_trans_from(self, trans_idx, env):
-        print(self.get_trans_text(trans_idx, env))
+    def print_trans_from(self, trans_id, env):
+        print(self.get_trans_text(trans_id, env))
 
     def get_trans_text(self, trans_id, env):
         action_names = env.actions
@@ -167,14 +167,12 @@ class ReplayMemory:
         if self.get_num_transitions() > 1000000:
             print("Don't!")
             return
-        trans_ids = np.stack(np.mgrid[0:self.trans_buf.stack_ptr, 0:self.trans_buf.par_inst])
-        for step_ids in trans_ids:
-            for trans_idx in step_ids:
-                self.print_trans_from(trans_idx, env)
+        for trans_id in range(self.trans_buf.get_num_transitions()):
+            self.print_trans_from(trans_id, env)
 
     def delete_first(self, n):
         """Deletes the first n transitions from this memory."""
-        steps_to_del = n // self.trans_buf.par_inst
+        steps_to_del = n // self.trans_buf.num_par_inst
         self.trans_buf.delete_first(steps_to_del)
         if self.sequential:
             self.seq_mngr.delete_first(steps_to_del)
@@ -183,7 +181,7 @@ class ReplayMemory:
         config = {"size": self.trans_buf.size,
                   "state_shapes": self.state_shapes,
                   "n_step": self.n_step,
-                  "num_par_envs": self.trans_buf.par_inst,
+                  "num_par_envs": self.trans_buf.num_par_inst,
                   "hidden_state_shapes": self.hidden_state_shapes,
                   "sequence_len": self.seq_mngr.seq_len if self.sequential else None,
                   "sequence_shift": self.seq_mngr.seq_shift if self.sequential else None,
@@ -191,8 +189,8 @@ class ReplayMemory:
         return config
 
     def id2idx(self, ids):
-        step_indices = ids // self.trans_buf.par_inst
-        env_indices = ids % self.trans_buf.par_inst
+        step_indices = ids // self.trans_buf.num_par_inst
+        env_indices = ids % self.trans_buf.num_par_inst
         return np.array([step_indices, env_indices])
 
 

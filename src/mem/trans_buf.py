@@ -22,17 +22,17 @@ class TransitionsBuffer:
         self.stack_ptr = 0
         self.saving_hidden_states = hidden_shapes is not None
 
-        self.par_inst = par_inst
+        self.num_par_inst = par_inst
         self.state_shapes = state_shapes
         self.hidden_state_shapes = hidden_shapes
 
-        self.states = shapes2arrays(state_shapes, preceded_by=(self.buffer_len, self.par_inst))
+        self.states = shapes2arrays(state_shapes, preceded_by=(self.buffer_len, self.num_par_inst))
         if self.saving_hidden_states:
-            self.hidden_states = shapes2arrays(hidden_shapes, preceded_by=(self.buffer_len, self.par_inst))
+            self.hidden_states = shapes2arrays(hidden_shapes, preceded_by=(self.buffer_len, self.num_par_inst))
         else:
             self.hidden_states = None
 
-        self.scalar_obs = np.zeros(shape=(self.buffer_len, self.par_inst, 6), dtype="float32")
+        self.scalar_obs = np.zeros(shape=(self.buffer_len, self.num_par_inst, 6), dtype="float32")
 
         self.init_prio = 1
 
@@ -84,23 +84,22 @@ class TransitionsBuffer:
         else:
             # Prepare indices for frame-stacking
             step_indices, env_indices = trans_indices
-            lookbacks = np.flip(np.arange(stack_size))
-            step_stack_indices = np.repeat(np.expand_dims(step_indices, axis=-1), stack_size, axis=-1) - lookbacks
-            env_stack_indices = np.repeat(np.expand_dims(env_indices, axis=-1), stack_size, axis=-1)
+            lookbacks = np.zeros(shape=(*step_indices.shape, stack_size), dtype="int")
+            valid = np.ones(step_indices.shape, dtype="bool")
+            for frame in range(1, stack_size):
+                valid &= step_indices - frame >= 0 & \
+                         ~ self.get_terminals([step_indices - frame, env_indices])
+                lookbacks[..., stack_size - 1 - frame] = lookbacks[..., stack_size - frame] - valid
 
-            # Mask invalid indices
-            mask_invalid = step_stack_indices < 0
-            for frame_stack in range(1, stack_size):
-                curr_stack = stack_size - 1 - frame_stack
-                mask_invalid[:, curr_stack] = mask_invalid[:, curr_stack + 1] | \
-                                              self.get_terminals([step_indices - frame_stack, env_indices])
+            step_stack_indices = np.repeat(np.expand_dims(step_indices, axis=-1), stack_size, axis=-1) + lookbacks
+            env_stack_indices = np.repeat(np.expand_dims(env_indices, axis=-1), stack_size, axis=-1)
 
             # Extract from state components
             states = get_stack_state_comp(self.states, step_stack_indices,
-                                          env_stack_indices, mask_invalid)
+                                          env_stack_indices)
             if self.saving_hidden_states:
                 hidden_states = get_stack_state_comp(self.hidden_states, step_stack_indices,
-                                                     env_stack_indices, mask_invalid)
+                                                     env_stack_indices)
 
         return states, hidden_states
 
@@ -161,7 +160,7 @@ class TransitionsBuffer:
         :return:
         """
         step_indices, env_indices = trans_indices
-        if np.any(step_indices > self.stack_ptr - steps) or np.any(env_indices >= self.par_inst):
+        if np.any(step_indices > self.stack_ptr - steps) or np.any(env_indices >= self.num_par_inst):
             raise ValueError("Invalid transition indices! Given indices lie outside of the "
                              "transitions buffer or the accessed transitions are not available "
                              "for learning yet.")
@@ -194,7 +193,7 @@ class TransitionsBuffer:
                next_states, next_hidden_states, terminals
 
     def get_num_transitions(self):
-        return self.stack_ptr * self.par_inst
+        return self.stack_ptr * self.num_par_inst
 
     def set_priorities(self, trans_indices, priorities):
         step_indices, env_indices = trans_indices
@@ -220,11 +219,10 @@ def del_first(lst, n):
     lst[m:] = 0
 
 
-def get_stack_state_comp(states, step_stack_indices, env_stack_indices, mask_invalid):
+def get_stack_state_comp(states, step_stack_indices, env_stack_indices):
     extracted_states = []
     for state_comps in states:
         state_comp = state_comps[step_stack_indices, env_stack_indices]
-        state_comp[mask_invalid] = 0
-        stacks_sep = np.moveaxis(state_comp, 1, -2)
+        stacks_sep = np.moveaxis(state_comp, step_stack_indices.ndim - 1, -2)
         extracted_states += [np.reshape(stacks_sep, (*stacks_sep.shape[:-2], -1))]
     return extracted_states

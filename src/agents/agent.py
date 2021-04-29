@@ -109,7 +109,7 @@ class Agent:
         inputs, latent = stem_net.get_functional_graph(self.stack_shapes, batch_size)
         outputs = q_net(latent)
         model = tf.keras.Model(inputs=inputs, outputs=outputs)
-        model.compile(loss='huber_loss', optimizer=self.optimizer)
+        model.compile(loss='huber_loss', optimizer=self.optimizer)  # Huber loss equiv. to gradient clipping
         return model
 
     def init_target_learner(self):
@@ -246,6 +246,8 @@ class Agent:
                 # Reset all finished envs and update their corresponding current variables
                 self.env.reset_for(fin_env_ids)
                 returns[fin_env_ids] = 0
+
+                self.stacker.reset_stacks(fin_env_ids)
 
                 # Reset actor's LSTM states (if any) to zero
                 self.reset_cell_states_for(self.actor, fin_env_ids)

@@ -7,10 +7,10 @@ from src.agents.agent import load_and_play
 # load_and_play("test", Pong, epsilon=1)
 
 # "titus", "negative_a", "prioritized", "eps_400K"
-compare_statistics(["new_replay_buffer", "increasingly_bad_death", "4_stacked", "1_stacked"],
+compare_statistics(["eps_0_2", "increasingly_bad_death", "4_stacked_adjusted_death_penalty_075", "4_stacked"],
                    env_type=Snake,
-                   cut_at_episode=40000, cut_at_transition=10000000,
-                   cut_at_cycle=300, cut_at_hour=2)
+                   cut_at_episode=60000, cut_at_transition=120000000,
+                   cut_at_cycle=4000, cut_at_hour=14)
 
 # cb = ChainBomb(1)
 # highscores_ai, highscores_human = cb.get_highscores()
