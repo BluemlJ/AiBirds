@@ -9,7 +9,7 @@ seed = 735249652
 set_seed(seed)  # TODO: set for envs
 
 # Environment
-num_par_envs = 100
+num_par_envs = 50
 env = Pong(num_par_inst=num_par_envs)
 
 # Training and synchronization
@@ -56,7 +56,7 @@ stack_size = 4
 agent = Agent(env=env,
               stem_network=stem_model,
               q_network=q_network,
-              name="rainbow",
+              name="shorter_max_ep_len",
               replay_batch_size=replay_batch_size,
               stack_size=stack_size,
               optimizer=optimizer,

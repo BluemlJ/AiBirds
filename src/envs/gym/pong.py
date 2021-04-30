@@ -2,11 +2,11 @@ import gym
 import cv2
 import numpy as np
 from src.envs.env import ParallelEnvironment
-import matplotlib.pyplot as plt
+from src.utils.utils import plot_grayscale
 
 
 RESIZE_DIM = (105, 80)
-MAX_EPISODE_LEN = 2000
+MAX_EPISODE_LEN = 1000
 
 
 class Pong(ParallelEnvironment):
@@ -19,7 +19,6 @@ class Pong(ParallelEnvironment):
         actions = ["IDLE", "FIRE", "UP", "DOWN"]
         super(Pong, self).__init__(num_par_inst, actions)
         self.gym_envs = [gym.make("Pong-v0") for i in range(num_par_inst)]
-        # action_space = self.gym_envs[0].action_space
         self.state_shape = (*RESIZE_DIM, 1)
         self.states = np.zeros(shape=(self.num_par_inst, *self.state_shape))
 
@@ -38,7 +37,6 @@ class Pong(ParallelEnvironment):
     def update_states(self, ids=None):
         ids = range(self.num_par_inst) if ids is None else ids
         for env_id in ids:
-            # self.states[env_id] = self.gym_envs[env_id].env.state
             self.states[env_id] = self.preprocess(self.gym_envs[env_id].env.ale.getScreenRGB())
 
     def step(self, actions):  # TODO: implement and test threading
@@ -53,6 +51,7 @@ class Pong(ParallelEnvironment):
 
         self.times += 1
         self.game_overs = self.times >= MAX_EPISODE_LEN
+        self.wins[self.game_overs] = self.scores[self.game_overs] > 0
 
         return rewards, self.scores, self.game_overs, self.times, self.wins
 
@@ -72,9 +71,13 @@ class Pong(ParallelEnvironment):
         assert self.num_par_inst == 1, "Only ParallelEnvironments with a single instance support rendering."
         self.gym_envs[0].render()
 
-    def plot_state(self, state):
-        plt.imshow(state)
-        plt.show()
+    def plot_all_states(self):
+        for state in self.states:
+            plot_grayscale(state)
+
+    def plot_state(self, idx):
+        x_label = "Time = %d, Score = %d, Game Over = %s" % (self.times[idx], self.scores[idx], self.game_overs[idx])
+        plot_grayscale(self.states[idx], title="State of env %d" % idx, x_label=x_label)
 
     def has_test_levels(self):
         return False

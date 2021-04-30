@@ -247,7 +247,8 @@ class Agent:
 
                 # Save stats
                 for idx in fin_env_ids:
-                    self.stats.denote_episode_stats(returns[idx], scores[idx], times[idx], wins[idx], self.memory)
+                    self.stats.denote_episode_stats(returns[idx], scores[idx], times[idx], wins[idx],
+                                                    idx, self.memory)
 
                 # Reset all finished envs and update their corresponding current variables
                 self.env.reset_for(fin_env_ids)
@@ -291,7 +292,7 @@ class Agent:
                 self.actor.set_weights(self.online_learner.get_weights())
 
             if i % PRINT_STATS_PERIOD == 0:
-                self.stats.print_stats(i, num_parallel_steps, PRINT_STATS_PERIOD,
+                self.stats.print_stats(i, num_parallel_steps, PRINT_STATS_PERIOD, self.num_par_envs,
                                        self.epsilon.get_value(done_transitions), self.num_par_envs)
 
         self.save()

@@ -15,7 +15,6 @@ class ReplayMemory:
 
         self.n_step = n_step
         self.stack_size = stack_size  # frame stacking
-        self.seq_ptr = 0
 
         self.sequential = hidden_state_shapes is not None
         if self.sequential:
@@ -192,6 +191,11 @@ class ReplayMemory:
         step_indices = ids // self.trans_buf.num_par_inst
         env_indices = ids % self.trans_buf.num_par_inst
         return np.array([step_indices, env_indices])
+
+    def idx2id(self, indices):
+        step_indices, env_indices = indices
+        ids = step_indices * self.trans_buf.num_par_inst + env_indices
+        return ids
 
 
 def choice_by_priority(num_instances, priorities, alpha):

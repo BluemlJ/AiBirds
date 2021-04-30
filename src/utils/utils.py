@@ -251,3 +251,16 @@ def increase_last_dim(shapes, factor):
         return shapes
     else:
         return [(*shape[:-1], shape[-1] * factor) for shape in shapes]
+
+
+def plot_grayscale(data_2d, title=None, x_label=None):
+    plt.imshow(data_2d, cmap="binary", vmin=0, vmax=1)
+    ax = plt.gca()
+    ax.axes.xaxis.set_ticks([])
+    ax.axes.yaxis.set_ticks([])
+    if title is not None:
+        plt.title(title)
+    if x_label is not None:
+        plt.xlabel(x_label)
+    plt.show()
+    plt.close()

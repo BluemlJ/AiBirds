@@ -74,7 +74,7 @@ class Statistics:
         self.computation_timer = time.time()
         self.timer_started = True
 
-    def denote_episode_stats(self, ret, score, t, win, memory):
+    def denote_episode_stats(self, ret, score, t, win, env_id, memory):
         assert self.timer_started
 
         if self.episode_ptr == len(self.episode_stats):
@@ -84,18 +84,18 @@ class Statistics:
         seconds = time.time() - self.total_timer
         ret_rec, score_rec, time_rec = self.get_records()
         new_return_record = ret_rec < ret
-        ret_rec = max(ret_rec, ret)
-        score_rec = max(score_rec, score)
-        time_rec = max(time_rec, t)
+        ret_rec = max(ret, ret_rec)
+        score_rec = max(score, score_rec)
+        time_rec = max(t, time_rec)
         self.episode_stats[self.episode_ptr] = [trans, seconds, ret, score, t, win,
                                                 ret_rec, score_rec, time_rec]
         self.episode_ptr += 1
         self.current_run_trans_no += t
 
-        """if new_return_record and memory is not None and \
-                self.logger is not None and self.env is not None:
-            transition_text = memory.get_trans_text(memory.get_num_transitions() - 1, self.env)
-            self.logger.log_new_record(ret, transition_text)"""
+        if new_return_record and self.logger is not None and self.env is not None:
+            trans_id = memory.idx2id([memory.trans_buf.stack_ptr, env_id])
+            transition_text = memory.get_trans_text(trans_id, self.env)
+            self.logger.log_new_record(ret, transition_text)
 
     def denote_learning_stats(self, loss, individual_losses, learning_rate, trans_ids, predictions,
                               targets, env, memory):
@@ -195,7 +195,7 @@ class Statistics:
             time_rec = self.episode_stats[self.episode_ptr - 1, self.TIME_RECORD]
             return ret_rec, score_rec, time_rec
         else:
-            return -np.inf, 0, 0
+            return np.nan, np.nan, np.nan
 
     def compute_records(self):
         num_episodes = self.get_num_episodes()
@@ -323,7 +323,8 @@ class Statistics:
                 return True
         return False
 
-    def print_stats(self, par_step, total_par_steps, print_stats_period, epsilon: int, ma_episode_size):
+    def print_stats(self, par_step, total_par_steps, print_stats_period, num_par_envs,
+                    epsilon: int, ma_episode_size):
         assert self.timer_started
         comp_time = time.time() - self.computation_timer
         total_time = time.time() - self.total_timer
@@ -338,14 +339,14 @@ class Statistics:
         ma_text = num2text(ma_episode_size)
 
         ep = num2text(self.get_num_episodes())
-        trans = num2text(self.get_current_transition())
+        trans = num2text(par_step * num_par_envs)
         cyc = num2text(self.get_num_cycles())
 
         stats_text = "\n" + bold("Parallel step %d/%d" % (par_step, total_par_steps)) + \
                      "\n   # Ep. | Trans. | Cyc.:     %s | %s | %s" % (ep, trans, cyc) + \
                      "\n   Epsilon:                   %.3f" % epsilon + \
                      "\n   " + "{:27s}".format("Score (%s MA | record):" % ma_text) + \
-                     ("%.1f | %d" % (ma_score, score_record))
+                     ("%.1f | %.0f" % (ma_score, score_record))
 
         if self.env_type.WINS_RELEVANT:
             ma_wins = get_moving_avg_val(self.get_wins(), ma_episode_size)
@@ -459,12 +460,27 @@ class Statistics:
                       out_path=out_path + "priorities.png")
 
     def plot_score_dist(self, out_path):
-        scores = self.get_scores()
-        plt.hist(scores[-1000:], range=None, bins=20)
-        finalize_plot(title="Recent 1000 episode's score distribution",
-                      x_label="Score",
-                      y_label="Number of episodes",
-                      out_path=out_path + "score_dist.png")
+        scores = self.get_scores()[-1000:]
+        if len(scores) == 1000:
+            max_score, min_score = np.max(scores), np.min(scores)
+            range_len = np.max(scores) - np.min(scores)
+            if range_len >= 20:
+                bin_size = np.ceil(range_len / 20)
+            else:
+                bin_size = 1
+            bins = np.arange(min_score, max_score + 1, bin_size) - 0.5
+            scores_grouped = scores.reshape(-1, 5)
+
+            cmap = plt.cm.get_cmap('Blues')
+            colors = [cmap(val) for val in np.arange(1, 0, -0.2)]
+
+            plt.hist(scores_grouped, range=None, bins=bins, histtype="barstacked", rwidth=0.7, color=colors)
+            cbar = plt.colorbar(plt.cm.ScalarMappable(norm=None, cmap=cmap), orientation="horizontal", ticks=[0, 1])
+            cbar.ax.set_xticklabels(['Old', 'Recent'])
+            finalize_plot(title="Recent 1000 episode's score distribution",
+                          x_label="Score",
+                          y_label="Number of episodes",
+                          out_path=out_path + "score_dist.png")
 
     def log_extreme_losses(self, individual_losses, trans_ids, predictions, targets, env, memory):
         if self.logger is None:

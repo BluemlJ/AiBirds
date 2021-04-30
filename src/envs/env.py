@@ -84,7 +84,7 @@ class ParallelEnvironment(Environment, metaclass=ABCMeta):
 
     def print_all_current_states(self):
         states = self.get_states()
-        for env_id in self.num_par_inst:
+        for env_id in range(self.num_par_inst):
             state = [state_comps[env_id] for state_comps in states]
             print("Environment instance %d:" % env_id)
             print(self.state2text(state))
