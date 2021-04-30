@@ -86,6 +86,33 @@ class StemNetwork2D(StemNetwork):
         return {"latent_dim": self.latent_dim}
 
 
+class Rainbow(StemNetwork):
+    """Stem part of the DQN used in the Rainbow paper but without Noisy Nets."""
+    def __init__(self, latent_dim):
+        super().__init__(sequential=False)
+        self.latent_dim = latent_dim
+
+    def get_functional_graph(self, input_shapes, batch_size=None):
+        input_shape = input_shapes[0]
+        input = Input(shape=input_shape, name="input")
+
+        conv1 = Convolution2D(32, (8, 8), strides=4, padding='valid', activation="relu",
+                              kernel_initializer=VarianceScaling(scale=2),
+                              use_bias=False, name="conv_1")(input)
+        conv2 = Convolution2D(64, (4, 4), strides=2, padding='valid', activation="relu",
+                              kernel_initializer=VarianceScaling(scale=2),
+                              use_bias=False, name="conv_2")(conv1)
+        conv3 = Convolution2D(64, (3, 3), strides=1, padding='valid', activation="relu",
+                              kernel_initializer=VarianceScaling(scale=2),
+                              use_bias=False, name="conv_3")(conv2)
+        flat = Flatten(name='flat')(conv3)
+
+        return [input], flat
+
+    def get_config(self):
+        return {"latent_dim": self.latent_dim}
+
+
 class ConvLSTM(StemNetwork):
     def __init__(self, latent_dim, lstm_dim, sequence_len):
         super().__init__(sequential=True, sequence_len=sequence_len)

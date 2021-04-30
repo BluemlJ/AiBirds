@@ -9,8 +9,8 @@ from src.agents.agent import load_and_play
 # "titus", "negative_a", "prioritized", "eps_400K"
 compare_statistics(["eps_0_2", "increasingly_bad_death", "4_stacked_adjusted_death_penalty_075", "4_stacked"],
                    env_type=Snake,
-                   cut_at_episode=60000, cut_at_transition=120000000,
-                   cut_at_cycle=4000, cut_at_hour=14)
+                   cut_at_episode=60000, cut_at_transition=300000000,
+                   cut_at_cycle=8000, cut_at_hour=20)
 
 # cb = ChainBomb(1)
 # highscores_ai, highscores_human = cb.get_highscores()

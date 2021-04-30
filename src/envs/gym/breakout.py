@@ -72,7 +72,7 @@ class Breakout(ParallelEnvironment):
         return np.expand_dims(np.average(cv2.resize(state, RESIZE_DIM[::-1]), axis=2), axis=2) / 255
 
     def get_states(self):
-        return self.states
+        return [self.states]
 
     def get_state_shapes(self):
         return [self.state_shape]

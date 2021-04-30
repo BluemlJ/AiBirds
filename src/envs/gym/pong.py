@@ -10,7 +10,7 @@ MAX_EPISODE_LEN = 2000
 
 
 class Pong(ParallelEnvironment):
-    NAME = "breakout"
+    NAME = "pong"
     TIME_RELEVANT = False
     WINS_RELEVANT = True
 
@@ -60,7 +60,7 @@ class Pong(ParallelEnvironment):
         return np.expand_dims(np.average(cv2.resize(state, RESIZE_DIM[::-1]), axis=2), axis=2) / 255
 
     def get_states(self):
-        return self.states
+        return [self.states]
 
     def get_state_shapes(self):
         return [self.state_shape]

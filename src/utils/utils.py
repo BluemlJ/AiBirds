@@ -163,11 +163,13 @@ def del_first(lst, n):
 
 
 def num2text(num):
-    if num < 1:
+    if num == 0:
+        return "0"
+    elif np.abs(num) < 1:
         return "%.2f" % num
-    elif num < 1000:
+    elif np.abs(num) < 1000:
         return str(num)
-    elif num < 1000000:
+    elif np.abs(num) < 1000000:
         num_rd = np.round(num / 1000)
         text = "%dK" % num_rd
         return text
@@ -237,10 +239,10 @@ def num2bool(arr):
     return arr == 1
 
 
-def shapes2arrays(shapes, preceded_by=None):
+def shapes2arrays(shapes, preceded_by=None, dtype="float32"):
     if preceded_by is not None:
         shapes = [(*preceded_by, *shape) for shape in shapes]
-    return [np.zeros(shape=shape, dtype="float32") for shape in shapes]
+    return [np.zeros(shape=shape, dtype=dtype) for shape in shapes]
 
 
 def increase_last_dim(shapes, factor):

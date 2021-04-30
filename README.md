@@ -66,11 +66,13 @@ Any generated output (models, plots, statistics etc.) will be saved in `out/`.
 | `latent_v_dim`           | `64`              | Width of latent layer of _value_ part of Q-network | Similar to `latent_dim` | Similar to `latent_dim` |
 | `latent_a_dim`           | `64`              | Width of latent layer of _advantage_ part of Q-network | Similar to `latent_dim` | Similar to `latent_dim` |
 | **Replay (training)**
+| `optimizer`              | `tf.Adam`         | The `tf` optimizer to use | - | - |
 | `mem_size`               | `4000000`         | Number of transitions that fit into the replay memory | Overfitting to recent observations | RAM out of memory, too old transitions in replays => in case of RNNs can lead to _recurrent state staleness_ due to representational drift; large computation overhead due to replay sampling |
 | `replay_period`          | `64`              | Number of (parallel) steps between each training session of the learner | Training overhead dominates computation time | Slow training progress |
 | `replay_size_multiplier` | `4`               | Determines replay size by multiplying number of new transitions with this factor | Too strong focus on new observations, overfitting | Too weak focus on new observations, slow training progress |
 | `replay_batch_size`      | `1024`            | Batch size used for learning, depends on GPU | GPU parallelization not used effectively | GPU out of memory |
 | `replay_epochs`          | `1`               | Number of epochs per replay | Wasted training data, slow progress | Overfitting |
+| `min_hist_len`           | `0`               | Minimum number of observed transitions before training is allowed | Unstable training or overfitting in the beginning | Wasted time |
 | `alpha`                  | `0.7`             | Prioritized experience replay exponent, controls the effect of priority | Priorities have low/no effect on training, slower training progress | Too strong priority emphasis, overfitting |
 | `use_double`             | `True`            | Whether to use Double Q-Learning to tackle moving target issue | - | - |
 | `target_sync_period`     | `256`             | Number of (parallel) steps between synchronization of online learner and target learner | Moving target problem | Slow training progress |

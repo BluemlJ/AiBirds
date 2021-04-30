@@ -26,13 +26,17 @@ class TransitionsBuffer:
         self.state_shapes = state_shapes
         self.hidden_state_shapes = hidden_shapes
 
-        self.states = shapes2arrays(state_shapes, preceded_by=(self.buffer_len, self.num_par_inst))
+        self.scalar_obs = np.zeros(shape=(self.buffer_len, self.num_par_inst, 6), dtype="float32")
+
+        self.state_dtype = np.dtype("float32")
+        self.print_mem_usage()
+        self.states = shapes2arrays(state_shapes, preceded_by=(self.buffer_len, self.num_par_inst),
+                                    dtype=self.state_dtype)
         if self.saving_hidden_states:
-            self.hidden_states = shapes2arrays(hidden_shapes, preceded_by=(self.buffer_len, self.num_par_inst))
+            self.hidden_states = shapes2arrays(hidden_shapes, preceded_by=(self.buffer_len, self.num_par_inst),
+                                               dtype=self.state_dtype)
         else:
             self.hidden_states = None
-
-        self.scalar_obs = np.zeros(shape=(self.buffer_len, self.num_par_inst, 6), dtype="float32")
 
         self.init_prio = 1
 
@@ -206,6 +210,18 @@ class TransitionsBuffer:
         self.del_states(n)
         del_first(self.scalar_obs, n)
         self.stack_ptr -= n
+
+    def print_mem_usage(self):
+        num_items = np.float64(0)
+        for shape in self.state_shapes:
+            num_items += np.prod(shape)
+        if self.saving_hidden_states:
+            for shape in self.hidden_state_shapes:
+                num_items += np.prod(shape)
+        num_items += self.scalar_obs.shape[-1]
+        num_items *= self.size
+        gib = num_items * self.state_dtype.itemsize / 2**30
+        print("Reserving %.2f GiB of RAM for TransitionsBuffer (ReplayMemory)..." % gib)
 
 
 def del_first(lst, n):

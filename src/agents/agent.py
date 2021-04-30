@@ -23,7 +23,7 @@ class Agent:
     """Deep Q-Network (DQN) agent for playing Tetris, Snake or other games"""
 
     def __init__(self, env: ParallelEnvironment, stem_network: StemNetwork, q_network: QNetwork,
-                 name, replay_batch_size, stack_size=1,
+                 name, replay_batch_size, stack_size=1, optimizer=tf.optimizers.Adam(),
                  use_double=True, use_distributed=True,
                  use_pretrained=False, override=False, seed=None):
         """Constructor
@@ -67,7 +67,7 @@ class Agent:
         self.sequential = stem_network.sequential
         self.sequence_len = stem_network.sequence_len
         self.q_network = q_network
-        self.optimizer = tf.optimizers.Adam()
+        self.optimizer = optimizer
         self.online_learner = self.init_online_learner()
         log_model_graph(self.online_learner, self.stack_shapes)
 
@@ -112,19 +112,22 @@ class Agent:
         model.compile(loss='huber_loss', optimizer=self.optimizer)  # Huber loss equiv. to gradient clipping
         return model
 
+    def copy_online_learner(self):
+        stem_net = copy_object_with_config(self.stem_network)
+        q_net = copy_object_with_config(self.q_network)
+        model = self.init_model(stem_net, q_net, self.num_par_envs)
+        model.set_weights(self.online_learner.get_weights())
+        return model
+
     def init_target_learner(self):
         if self.double:
-            return self.online_learner.clone_model()
+            return self.copy_online_learner()
         else:
             return self.online_learner
 
     def init_actor(self):
         if self.distributed:
-            stem_net = copy_object_with_config(self.stem_network)
-            q_net = copy_object_with_config(self.q_network)
-            model = self.init_model(stem_net, q_net, self.num_par_envs)
-            model.set_weights(self.online_learner.get_weights())
-            return model
+            return self.copy_online_learner()
         else:
             return self.online_learner
 
@@ -168,6 +171,8 @@ class Agent:
                  target_sync_period, actor_sync_period,
                  gamma, epsilon: ParamScheduler,
                  use_mc_return, alpha,
+                 max_replay_size=np.inf,
+                 min_hist_len=0,
                  memory_size=1000000,
                  n_step=1,
                  sequence_shift=None, eta=0.9,
@@ -189,6 +194,7 @@ class Agent:
         :param epsilon: Epsilon class, probability for random shot (epsilon greedy policy)
         :param use_mc_return: If True, uses Monte Carlo return targets instead of n-step TD targets
         :param alpha: For Prioritized Experience Replay: the larger alpha the stronger prioritization
+        :param min_hist_len:
         :param memory_size:
         :param n_step:
         :param sequence_shift:
@@ -263,7 +269,8 @@ class Agent:
 
             # Update the network weights every train_period levels to fit experience
             replay_size = replay_size_multiplier * new_transitions
-            if i % replay_period == 0 and replay_size > 0:
+            if self.memory.get_num_transitions() >= min_hist_len and i % replay_period == 0 and replay_size > 0:
+                replay_size = np.min([replay_size, max_replay_size])
                 learned_trans = self.learn(replay_size, gamma, epochs=replay_epochs, alpha=alpha, verbose=verbose)
                 new_transitions = max(0, new_transitions - learned_trans)
 
