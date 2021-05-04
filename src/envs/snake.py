@@ -142,7 +142,7 @@ class Snake(ParallelEnvironment):
 
         rewards[self.game_overs] -= 1  # + 0.75 * self.scores[self.game_overs]
 
-        return rewards, self.scores, self.game_overs, self.times, game_won
+        return rewards, self.scores, self.game_overs, self.times, game_won, self.game_overs
 
     def update_snake_movement_orientation(self, actions):
         action_valid = (self.snake_movement_orientations - actions) % 2 != 0

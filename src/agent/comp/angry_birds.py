@@ -1,4 +1,4 @@
-from src.agents.comp.stem import StemNetwork
+from src.agent.comp.stem import StemNetwork
 from tensorflow.keras.layers import Input, Flatten, Dense, ReLU, Convolution2D, MaxPool2D
 from tensorflow.keras.initializers import GlorotNormal
 

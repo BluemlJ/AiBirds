@@ -1,7 +1,9 @@
-from tensorflow.keras.layers import ReLU, Convolution2D, BatchNormalization, Flatten, Dense,\
+from tensorflow.keras.layers import ReLU, Convolution2D, BatchNormalization, Flatten, Dense, \
     MaxPool2D, Concatenate, LSTM, TimeDistributed, Layer, Input
 from tensorflow.keras.initializers import GlorotNormal, VarianceScaling
-from src.agents.comp.stem import StemNetwork
+from src.agent.comp.stem import StemNetwork
+import tensorflow as tf
+import numpy as np
 
 
 class TimeConvHead(Layer):
@@ -86,11 +88,42 @@ class StemNetwork2D(StemNetwork):
         return {"latent_dim": self.latent_dim}
 
 
-class Rainbow(StemNetwork):
-    """Stem part of the DQN used in the Rainbow paper but without Noisy Nets."""
-    def __init__(self, latent_dim):
+class RainbowImproved(StemNetwork):
+    """Added 4th conv to Rainbow's net."""
+
+    def __init__(self, hidden_size):
+        self.hidden_size = hidden_size
         super().__init__(sequential=False)
-        self.latent_dim = latent_dim
+
+    def get_functional_graph(self, input_shapes, batch_size=None):
+        input_shape = input_shapes[0]
+        input = Input(shape=input_shape, name="input")
+
+        conv1 = Convolution2D(32, (8, 8), strides=4, padding='valid', activation="relu",
+                              kernel_initializer=VarianceScaling(scale=2),
+                              use_bias=False, name="conv_1")(input)
+        conv2 = Convolution2D(64, (4, 4), strides=2, padding='valid', activation="relu",
+                              kernel_initializer=VarianceScaling(scale=2),
+                              use_bias=False, name="conv_2")(conv1)
+        conv3 = Convolution2D(64, (3, 3), strides=1, padding='valid', activation="relu",
+                              kernel_initializer=VarianceScaling(scale=2),
+                              use_bias=False, name="conv_3")(conv2)
+        conv4 = Convolution2D(128, (7, 7), strides=1, padding='valid', activation="relu",
+                              kernel_initializer=VarianceScaling(scale=2),
+                              use_bias=False, name="conv_4")(conv3)
+        flat = Flatten(name='flat')(conv4)
+
+        return [input], flat
+
+    def get_config(self):
+        return {"hidden_size": self.hidden_size}
+
+
+class Rainbow(StemNetwork):
+    """Stem part of the DQN used in the Rainbow paper."""
+
+    def __init__(self):
+        super().__init__(sequential=False)
 
     def get_functional_graph(self, input_shapes, batch_size=None):
         input_shape = input_shapes[0]
@@ -110,7 +143,7 @@ class Rainbow(StemNetwork):
         return [input], flat
 
     def get_config(self):
-        return {"latent_dim": self.latent_dim}
+        return {}
 
 
 class ConvLSTM(StemNetwork):

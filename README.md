@@ -53,6 +53,7 @@ Any generated output (models, plots, statistics etc.) will be saved in `out/`.
 | **General**
 | `num_parallel_inst`      | `500`             | Number of simultaneously executed environments | Training overhead dominates computation time | Possibly worse sample complexity, GPU or RAM out of memory |
 | `num_parallel_steps`     | `1000000`         | Number of transitions done per parallel environments | Learning stops before agent performance is optimal | Wasted energy, overfitting |
+| `policy`                 | `"greedy"`        | The policy used for planning (`"greedy"` for max Q-value, `"softmax"` for random choice of softmaxed Q-values) | - | - |
 | **Model input**
 | `stack_size`             | `1`               | Number of recent frames to be stacked for input, useful for envs with time dependency like Breakout | Agent has "no feeling for time", bad performance on envs with time dependency | Unnecessary computation overhead |
 | **Learning target**

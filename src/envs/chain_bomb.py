@@ -301,7 +301,7 @@ class ChainBomb(ParallelEnvironment, ChainBombBase):
         if self.mode == self.TEST_MODE and self.game_overs[0] and self.wins[0]:
             self.update_highscore()
 
-        return reward, self.scores, self.game_overs, self.times, self.wins
+        return reward, self.scores, self.game_overs, self.times, self.wins, self.game_overs
 
     def generate_random_levels(self, ids):
         n = len(ids)

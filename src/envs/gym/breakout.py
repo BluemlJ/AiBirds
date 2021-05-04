@@ -93,3 +93,7 @@ class Breakout(ParallelEnvironment):
 
     def generate_pretrain_data(self, num_instances):
         pass
+
+    def set_seed(self, seed):
+        for env in self.gym_envs:
+            env.seed(seed)

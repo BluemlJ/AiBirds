@@ -44,6 +44,9 @@ class ParallelEnvironment(Environment, metaclass=ABCMeta):
         self.game_overs[ids] = False
         self.wins[ids] = False
 
+    def reset_finished(self):
+        self.reset_for(np.where(self.game_overs)[0])
+
     def step(self, actions):
         """The given actions are executed in the environment and the environment
         performs a time step.
@@ -51,9 +54,10 @@ class ParallelEnvironment(Environment, metaclass=ABCMeta):
         :return: Updated information about all environments:
             rewards: the rewards gained with this step
             scores: the current raw game scores of all environments
-            game_overs: a Boolean array indicating game overs
+            terminals: a Boolean array indicating terminated episode segments
             times: an int array indicating for each env the number of steps since the last reset
             wins: a Boolean array indicating for each env if the episode was won (if defined)
+            game_overs: a Boolean array indicating terminated episodes (finished games)
         """
         raise NotImplementedError
 
@@ -75,7 +79,7 @@ class ParallelEnvironment(Environment, metaclass=ABCMeta):
         return len(self.actions)
 
     def render(self):
-        """Renders the environment inside a PyGame window."""
+        """Renders the current state of the environment(s)."""
         raise NotImplementedError
 
     def state2text(self, state):
@@ -88,6 +92,9 @@ class ParallelEnvironment(Environment, metaclass=ABCMeta):
             state = [state_comps[env_id] for state_comps in states]
             print("Environment instance %d:" % env_id)
             print(self.state2text(state))
+
+    def set_seed(self, seed):
+        pass
 
     def set_mode(self, mode):
         """Sets the level selection/generation mode."""
@@ -112,7 +119,7 @@ class ParallelEnvironment(Environment, metaclass=ABCMeta):
 
 
 class MultiAgentEnvironment(Environment):
-    """An abstract class for environments with multiple agents."""
+    """An abstract class for environments with multiple agent."""
 
     def __init__(self, num_agents, actions):
         self.num_agents = num_agents

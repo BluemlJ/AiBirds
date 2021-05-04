@@ -264,3 +264,9 @@ def plot_grayscale(data_2d, title=None, x_label=None):
         plt.xlabel(x_label)
     plt.show()
     plt.close()
+
+
+def random_choice_along_last_axis(p):
+    assert np.all(np.abs(np.sum(p, axis=-1)) - 1 < 1e-6)
+    r = np.expand_dims(np.random.rand(*p.shape[:-1]), axis=-1)
+    return (p.cumsum(axis=-1) > r).argmax(axis=-1)

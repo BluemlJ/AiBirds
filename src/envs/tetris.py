@@ -120,7 +120,7 @@ class Tetris(ParallelEnvironment):
         rewards = (self.scores - old_scores) / SCORE_NORMALIZATION
         # rewards[self.game_overs] = -40 / SCORE_NORMALIZATION
 
-        return rewards, self.scores, self.game_overs, self.times, self.wins
+        return rewards, self.scores, self.game_overs, self.times, self.wins, self.game_overs
 
     def perform_actions(self, actions):
         move_left_ids = np.where(actions == 1)[0]

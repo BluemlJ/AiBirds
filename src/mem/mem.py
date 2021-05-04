@@ -157,7 +157,7 @@ class ReplayMemory:
         text = "\nTransition %d:\n" % trans_id + env.state2text(state) + \
                "\nAction:     " + str(action_names[self.get_actions(trans_id)]) + \
                "\nReward:     " + str(self.get_rewards(trans_id)) + \
-               "\nScore gain: " + str(self.get_scores(trans_id)) + \
+               "\nScore:      " + str(self.get_scores(trans_id)) + \
                "\nTerminal:   " + str(self.get_terminals(trans_id)) + \
                "\nPriority:   " + str(self.get_priorities(trans_id))
         return text

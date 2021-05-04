@@ -196,7 +196,7 @@ class AngryBirds(ParallelEnvironment):
         reward = score2reward(score)
         self.times += 1
         self.game_overs[:] = game_over
-        return reward, score, self.game_overs, self.times, self.wins
+        return reward, score, self.game_overs, self.times, self.wins, self.game_overs
 
     def perform_actions(self, action):
         """Performs a shot and observes and returns the consequences."""

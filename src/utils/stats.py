@@ -462,6 +462,7 @@ class Statistics:
     def plot_score_dist(self, out_path):
         scores = self.get_scores()[-1000:]
         if len(scores) == 1000:
+            n_groups = 5
             max_score, min_score = np.max(scores), np.min(scores)
             range_len = np.max(scores) - np.min(scores)
             if range_len >= 20:
@@ -469,9 +470,9 @@ class Statistics:
             else:
                 bin_size = 1
             bins = np.arange(min_score, max_score + 1, bin_size) - 0.5
-            scores_grouped = scores.reshape(-1, 5)
+            scores_grouped = np.flip(scores).reshape(n_groups, -1).T
 
-            cmap = plt.cm.get_cmap('Blues')
+            cmap = plt.cm.get_cmap('Blues', n_groups)
             colors = [cmap(val) for val in np.arange(1, 0, -0.2)]
 
             plt.hist(scores_grouped, range=None, bins=bins, histtype="barstacked", rwidth=0.7, color=colors)
@@ -735,7 +736,7 @@ def compare_scores(plot_variance, **kwargs):
                               title="Score history comparison",
                               y_label="Score",
                               mov_avg=True,
-                              logarithmic=True,
+                              logarithmic=False,
                               plot_variance=plot_variance,
                               **kwargs)
     plot_comparison_on_domain(name="score_records",
@@ -744,7 +745,7 @@ def compare_scores(plot_variance, **kwargs):
                               title="Score records comparison",
                               y_label="Score",
                               mov_avg=False,
-                              logarithmic=True,
+                              logarithmic=False,
                               plot_variance=False,
                               **kwargs)
 
