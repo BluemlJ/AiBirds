@@ -6,10 +6,10 @@ from src.envs import *
 from src.agent.agent import load_and_play
 
 # setup_hardware(use_gpu=False, gpu_memory_limit=4096)
-# load_and_play("hendrik", Pong)
+# load_and_play("hendrik", Pong, num_par_envs=1)
 
 # "titus", "negative_a", "prioritized", "eps_400K"
-compare_statistics(["hendrik", "lr_epsilon_alpha_2"],
+compare_statistics(["hendrik", "lr_epsilon_alpha_2", "4th_conv", "no_death_penalty"],
                    env_type=Pong)
 
 # cb = ChainBomb(1)

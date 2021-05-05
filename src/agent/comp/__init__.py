@@ -1,4 +1,3 @@
-from src.agent.comp.dqn import DQN
 from src.agent.comp.q_network import QNetwork, DoubleQNetwork, VanillaQNetwork
 from src.agent.comp.stem import StemNetwork
 from src.agent.comp.generic import StemNetwork2D1D, StemNetwork2D, ConvLSTM, Rainbow

@@ -472,11 +472,11 @@ class Statistics:
             bins = np.arange(min_score, max_score + 1, bin_size) - 0.5
             scores_grouped = np.flip(scores).reshape(n_groups, -1).T
 
-            cmap = plt.cm.get_cmap('Blues', n_groups)
-            colors = [cmap(val) for val in np.arange(1, 0, -0.2)]
+            cmap = plt.cm.get_cmap('Blues_r', n_groups)
+            colors = [cmap(val) for val in np.arange(0, 1, 0.2)]
 
             plt.hist(scores_grouped, range=None, bins=bins, histtype="barstacked", rwidth=0.7, color=colors)
-            cbar = plt.colorbar(plt.cm.ScalarMappable(norm=None, cmap=cmap), orientation="horizontal", ticks=[0, 1])
+            cbar = plt.colorbar(plt.cm.ScalarMappable(norm=None, cmap=cmap), ticks=[0, 1])
             cbar.ax.set_xticklabels(['Old', 'Recent'])
             finalize_plot(title="Recent 1000 episode's score distribution",
                           x_label="Score",

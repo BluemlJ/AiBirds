@@ -612,7 +612,7 @@ class Agent:
         """Fetches the current game grid."""
         return self.env.get_states()
 
-    def just_play(self, num_par_envs=1, episodes=9999999, policy="greedy", epsilon=0, verbose=False):
+    def just_play(self, num_par_envs=1, policy="greedy", epsilon=0, **kwargs):
         print("Just playing around...")
         self.set_policy(policy)
 
@@ -622,8 +622,15 @@ class Agent:
             self.actor = self.online_learner
             self.stacker = StateStacker(self.state_shapes, self.stack_size, self.num_par_envs)
 
+        if self.num_par_envs == 1:
+            self.play_sequential(epsilon=epsilon, **kwargs)
+        else:
+            self.play_parallel(epsilon)
+
+    def play_sequential(self, episodes=9999999, epsilon=0, verbose=False):
         for i in range(episodes):
             self.env.reset()
+            self.stacker.reset_stacks([0])
             self.env.render()
             self.play_level(epsilon=epsilon, render_environment=True, verbose=verbose)
 
@@ -661,6 +668,17 @@ class Agent:
             print("Level finished with return %.2f, score %d, and time %d.\n" % (ret, score, env_time))
 
         return ret, score
+
+    def play_parallel(self, epsilon=0):
+        self.env.reset()
+        while True:
+            state = self.env.get_states()
+            self.stacker.add_states(state)
+            actions, _ = self.plan_epsilon_greedy(self.stacker.get_stacks(), epsilon)
+            rewards, scores, _, env_times, _, game_overs = self.env.step(actions)
+            self.env.render()
+            self.env.reset_finished()
+            self.stacker.reset_stacks(np.where(game_overs)[0])
 
     def test_on_levels(self, render=False):
         test_env = self.env.copy(1)

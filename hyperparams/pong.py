@@ -12,7 +12,7 @@ env.set_seed(seed)
 
 hyperparams = {
     # General
-    "name": "4th_conv",
+    "name": "later_terminals",
     "num_parallel_steps": 400000,
     "seed": seed,
     "env": env,
