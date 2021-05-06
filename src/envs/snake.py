@@ -56,39 +56,33 @@ class Snake(ParallelEnvironment):
 
         self.__init_env(range(self.num_par_inst))
 
-    def reset(self):
-        self.snake_head_locations[:] = 0
-        self.snake_bodies.reset()
-        self.fruit_locations[:] = 0
+    def reset(self, ids=None, **kwargs):
+        self.snake_bodies.reset(ids)
 
-        self.snake_movement_orientations[:] = 0
-
-        self.snake_head_fields[:] = False
-        self.snake_body_fields[:] = False
-        self.fruit_fields[:] = False
+        if ids is None:
+            self.snake_head_locations[:] = 0
+            self.fruit_locations[:] = 0
+            self.snake_movement_orientations[:] = 0
+            self.snake_head_fields[:] = False
+            self.snake_body_fields[:] = False
+            self.fruit_fields[:] = False
+            self.times_since_last_fruit[:] = 0
+        else:
+            self.snake_head_locations[ids] = 0
+            self.fruit_locations[ids] = 0
+            self.snake_movement_orientations[ids] = 0
+            self.snake_head_fields[ids] = False
+            self.snake_body_fields[ids] = False
+            self.fruit_fields[ids] = False
+            self.times_since_last_fruit[ids] = 0
 
         super(Snake, self).reset()
-        self.times_since_last_fruit[:] = 0
-
-        self.__init_env(range(self.num_par_inst))
-
-    def reset_for(self, ids):
-        self.snake_head_locations[ids] = 0
-        self.snake_bodies.reset_for(ids)
-        self.fruit_locations[ids] = 0
-
-        self.snake_movement_orientations[ids] = 0
-
-        self.snake_head_fields[ids] = False
-        self.snake_body_fields[ids] = False
-        self.fruit_fields[ids] = False
-
-        super(Snake, self).reset_for(ids)
-        self.times_since_last_fruit[ids] = 0
-
         self.__init_env(ids)
 
-    def __init_env(self, ids):
+    def __init_env(self, ids=None):
+        if ids is None:
+            ids = range(self.num_par_inst)
+
         # Initialize snake head (with margin to border)
         self.snake_head_locations[ids] = np.random.randint(low=(1, 1), high=(self.height - 1, self.width - 1),
                                                            size=(len(ids), 2))
@@ -353,14 +347,14 @@ class SnakeBodyBuffer:
 
         self.reset()
 
-    def reset(self):
-        self.buffer[:] = 0
-        self.pointer = 0
-        self.body_sizes[:] = 0
-
-    def reset_for(self, ids):
-        self.buffer[:, ids] = 0
-        self.body_sizes[ids] = 0
+    def reset(self, ids=None):
+        if ids is None:
+            self.buffer[:] = 0
+            self.pointer = 0
+            self.body_sizes[:] = 0
+        else:
+            self.buffer[:, ids] = 0
+            self.body_sizes[ids] = 0
 
     def init_head_locations(self, ids, locations):
         self.buffer[self.pointer, ids] = locations

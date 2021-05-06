@@ -61,20 +61,26 @@ class ParamScheduler:
                 return max(self.init_value * self.decay_rate ** decay_transitions, self.minimum)
             else:
                 milestone_cnt = np.sum(self.milestones <= current_trans_no)
-                if milestone_cnt == 0:
-                    return self.init_value
-                elif milestone_cnt == len(self.milestones) and self.milestone_values is not None:
+                if milestone_cnt == len(self.milestones) and self.milestone_values is not None:
                     return self.milestone_values[-1]
                 elif self.decay_mode == "lin":
                     # Linear interpolation
-                    segment_start = self.milestones[milestone_cnt - 1]
-                    segment_end = self.milestones[milestone_cnt]
-                    segment_progress = (current_trans_no - segment_start) / (segment_end - segment_start)
-                    start_value = self.milestone_values[milestone_cnt - 1]
+                    if milestone_cnt == 0:
+                        segment_start = 0
+                        start_value = self.init_value
+                    else:
+                        segment_start = self.milestones[milestone_cnt - 1]
+                        start_value = self.milestone_values[milestone_cnt - 1]
+
                     end_value = self.milestone_values[milestone_cnt]
+                    segment_end = self.milestones[milestone_cnt]
+
+                    segment_progress = (current_trans_no - segment_start) / (segment_end - segment_start)
                     return start_value * (1 - segment_progress) + end_value * segment_progress
                 elif self.decay_mode == "step":
-                    if self.milestone_factor is not None:
+                    if milestone_cnt == 0:
+                        return self.init_value
+                    elif self.milestone_factor is not None:
                         return self.init_value * self.milestone_factor ** milestone_cnt
                     else:
                         return self.milestone_values[milestone_cnt - 1]

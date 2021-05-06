@@ -68,23 +68,19 @@ class Tetris(ParallelEnvironment):
         if self.num_par_inst < 8:
             self.init_gui()
 
-    def reset(self):
-        super(Tetris, self).reset()
+    def reset(self, ids=None, **kwargs):
+        super(Tetris, self).reset(ids)
 
-        self.fields[:] = 0
-        self.fb_fields[:] = 0
-        self.fb_shapes[:] = 0
-        self.fb_anchors[:] = 0
-
-        self.spawn_falling_blocks()
-
-    def reset_for(self, ids):
-        super(Tetris, self).reset_for(ids)
-
-        self.fields[ids] = 0
-        self.fb_fields[ids] = 0
-        self.fb_shapes[ids] = 0
-        self.fb_anchors[ids] = 0
+        if ids is None:
+            self.fields[:] = 0
+            self.fb_fields[:] = 0
+            self.fb_shapes[:] = 0
+            self.fb_anchors[:] = 0
+        else:
+            self.fields[ids] = 0
+            self.fb_fields[ids] = 0
+            self.fb_shapes[ids] = 0
+            self.fb_anchors[ids] = 0
 
         self.spawn_falling_blocks(ids)
 
@@ -209,12 +205,11 @@ class Tetris(ParallelEnvironment):
         Empty fields are represented by False, all others by True."""
 
         states = np.stack((self.fields, self.fb_fields), axis=3)
-        return states, self.num_par_inst * [[]]
+        return [states]
 
     def get_state_shapes(self):
         image_state_shape = (self.height, self.width, 2)
-        numerical_state_shape = (0,)
-        return [image_state_shape, numerical_state_shape]
+        return [image_state_shape]
 
     def get_config(self):
         config = {"height": self.height,
@@ -345,7 +340,7 @@ class Tetris(ParallelEnvironment):
 
     def state2text(self, state):
         state_2d, state_1d = state
-        return self.state_2d_to_text(state_2d) + "\n" + self.state_1d_to_text(state_1d)
+        return self.state_2d_to_text(state_2d)
 
     def state_2d_to_text(self, state):
         lying_block_grid = state[:, :, 0]

@@ -30,22 +30,21 @@ class ParallelEnvironment(Environment, metaclass=ABCMeta):
         self.game_overs = np.zeros(shape=num_par_inst, dtype="bool")
         self.wins = np.zeros(shape=num_par_inst, dtype="bool")  # for envs with levels
 
-    def reset(self):
+    def reset(self, env_ids=None, **kwargs):
         """Resets all environments to their initial state."""
-        self.scores[:] = 0
-        self.times[:] = 0
-        self.game_overs[:] = False
-        self.wins[:] = False
-
-    def reset_for(self, ids):
-        """Resets selected environments to their initial state."""
-        self.scores[ids] = 0
-        self.times[ids] = 0
-        self.game_overs[ids] = False
-        self.wins[ids] = False
+        if env_ids is None:  # most efficient
+            self.scores[:] = 0
+            self.times[:] = 0
+            self.game_overs[:] = False
+            self.wins[:] = False
+        else:
+            self.scores[env_ids] = 0
+            self.times[env_ids] = 0
+            self.game_overs[env_ids] = False
+            self.wins[env_ids] = False
 
     def reset_finished(self):
-        self.reset_for(np.where(self.game_overs)[0])
+        self.reset(np.where(self.game_overs)[0])
 
     def step(self, actions):
         """The given actions are executed in the environment and the environment

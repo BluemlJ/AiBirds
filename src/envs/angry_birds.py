@@ -142,15 +142,16 @@ class AngryBirds(ParallelEnvironment):
         self.comm_interface.configure(self.id)
         self.observer.configure(self.id)
 
-    def reset(self):
-        self.load_next_level()
-        self.times[:] = 0
-        self.game_overs[:] = False
-
-    def reset_for(self, ids):
-        self.load_next_level()
-        self.times[:] = 0
-        self.game_overs[:] = False
+    def reset(self, ids=None, **kwargs):
+        super(AngryBirds, self).reset(ids)
+        if ids is None:
+            self.load_next_level()
+            self.times[:] = 0
+            self.game_overs[:] = False
+        else:
+            self.load_next_level()  # TODO: multiple envs
+            self.times[ids] = 0
+            self.game_overs[ids] = False
 
     def set_mode(self, mode):
         """Sets the environment's level selection mode. There are four options:

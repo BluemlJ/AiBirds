@@ -7,12 +7,12 @@ seed = 894165
 set_seed(seed)
 
 # Environment
-env = Pong(num_par_inst=50)
+env = SuperMario(num_par_inst=1)
 env.set_seed(seed)
 
 hyperparams = {
     # General
-    "name": "1-step",
+    "name": "debug",
     "num_parallel_steps": 400000,
     "seed": seed,
     "env": env,

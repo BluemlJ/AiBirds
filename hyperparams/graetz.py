@@ -10,29 +10,29 @@ set_seed(seed)
 env = Pong(num_par_inst=50)
 env.set_seed(seed)
 
-hyperparams = {
+hyperparams = {  # max episode length: 18000
     # General
-    "name": "1-step",
+    "name": "graetz",
     "num_parallel_steps": 400000,
     "seed": seed,
     "env": env,
 
     # Training and synchronization
-    "learning_rate": ParamScheduler(init_value=0.001, decay_mode="step",
-                                    milestones=[200000],
-                                    milestone_values=[0.00025]),
-    "replay_period": 32,
-    "replay_size_multiplier": 4,
-    "replay_batch_size": 256,
-    "alpha": 0.5,
+    "learning_rate": ParamScheduler(init_value=0.00025),
+    "replay_period": 4,
+    "replay_size_multiplier": 8,
+    "replay_batch_size": 32,
+    "alpha": 0,
+    "min_hist_len": 50000,
 
     # Learning target returns
     "gamma": 0.99,
-    "n_step": 1,
+    "n_step": 0,
+    "target_sync_period": 200,
 
     # Model
     "stem_network": comp.generic.RainbowImproved(1024),
-    "q_network": comp.q_network.DoubleQNetwork(128, 128),
+    "q_network": comp.q_network.DoubleQNetwork(512, 512),
 
     # Policy
     "epsilon": ParamScheduler(init_value=1, decay_mode="lin",

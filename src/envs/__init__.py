@@ -4,3 +4,4 @@ from src.envs.angry_birds import AngryBirds
 from src.envs.chain_bomb import ChainBomb
 from src.envs.gym.breakout import Breakout
 from src.envs.gym.pong import Pong
+from src.envs.gym.mario import SuperMario

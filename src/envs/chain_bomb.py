@@ -243,11 +243,10 @@ class ChainBomb(ParallelEnvironment, ChainBombBase):
 
         self.reset()
 
-    def reset(self, lvl_no=None):
-        self.reset_for(np.arange(self.num_par_inst), lvl_no)
-
-    def reset_for(self, ids, lvl_no=None):
-        super(ChainBomb, self).reset_for(ids)
+    def reset(self, ids=None, lvl_no=None):
+        super(ChainBomb, self).reset(ids)
+        if ids is None:
+            ids = np.arange(self.num_par_inst)
 
         if self.mode == self.TRAIN_MODE:
             self.delete_all_objects(ids)
@@ -262,11 +261,11 @@ class ChainBomb(ParallelEnvironment, ChainBombBase):
 
     def reset_to_next_level(self):
         next_lvl_no = (self.current_level + 1) % len(self.levels_list)
-        self.reset(next_lvl_no)
+        self.reset(lvl_no=next_lvl_no)
 
     def reset_to_previous_level(self):
         next_lvl_no = (self.current_level - 1) % len(self.levels_list)
-        self.reset(next_lvl_no)
+        self.reset(lvl_no=next_lvl_no)
 
     def step(self, actions):
         points = self.ignite_explosion(actions)

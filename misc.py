@@ -5,11 +5,11 @@ from src.utils.utils import setup_hardware
 from src.envs import *
 from src.agent.agent import load_and_play
 
-# setup_hardware(use_gpu=False, gpu_memory_limit=4096)
-# load_and_play("hendrik", Pong, num_par_envs=1)
+# setup_hardware(use_gpu=True, gpu_memory_limit=4096)
+# load_and_play("larger_lr", Pong, num_par_envs=1)
 
 # "titus", "negative_a", "prioritized", "eps_400K"
-compare_statistics(["hendrik", "lr_epsilon_alpha_2", "4th_conv", "no_death_penalty"],
+compare_statistics(["hendrik", "later_terminals_2", "larger_hidden", "larger_lr", "larger_hidden_v2"],
                    env_type=Pong)
 
 # cb = ChainBomb(1)

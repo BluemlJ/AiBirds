@@ -93,7 +93,7 @@ class Statistics:
         self.current_run_trans_no += t
 
         if new_return_record and self.logger is not None and self.env is not None:
-            trans_id = memory.idx2id([memory.trans_buf.stack_ptr, env_id])
+            trans_id = memory.idx2id([memory.trans_buf.stack_ptr - 1, env_id])
             transition_text = memory.get_trans_text(trans_id, self.env)
             self.logger.log_new_record(ret, transition_text)
 
@@ -357,7 +357,7 @@ class Statistics:
             ma_time = get_moving_avg_val(self.get_times(), ma_episode_size)
             stats_text += \
                 "\n   " + "{:27s}".format("Time (%s MA | record):" % ma_text) + \
-                ("%.1f | %d" % (ma_time, time_record))
+                ("%.1f | %.0f" % (ma_time, time_record))
 
         stats_text += "\n   " + "{:27s}".format("Loss (%s MA):" % num2text(ma_cycle_size)) + ("%.4f" % ma_loss) + \
                       "\n   Learning rate:             %.6f" % self.get_current_learning_rate() + \
@@ -370,13 +370,13 @@ class Statistics:
         if self.logger is not None:
             self.logger.log_step_statistics(stats_text + "\n")
 
-        if self.score_crashed(ma_score) and not self.continue_training:
+        """if self.score_crashed(ma_score) and not self.continue_training:
             question = orange("Score crashed! %s MA score dropped by 95 %%. "
                               "Still want to continue training? (y/n)" % ma_text)
             if not user_agrees_to(question):
                 quit()
             else:
-                self.continue_training = True
+                self.continue_training = True"""
 
         self.computation_timer = time.time()
 
@@ -472,12 +472,13 @@ class Statistics:
             bins = np.arange(min_score, max_score + 1, bin_size) - 0.5
             scores_grouped = np.flip(scores).reshape(n_groups, -1).T
 
-            cmap = plt.cm.get_cmap('Blues_r', n_groups)
+            cmap = plt.cm.get_cmap('Blues_r', n_groups + 1)
             colors = [cmap(val) for val in np.arange(0, 1, 0.2)]
 
             plt.hist(scores_grouped, range=None, bins=bins, histtype="barstacked", rwidth=0.7, color=colors)
+            cmap = plt.cm.get_cmap('Blues_r', n_groups)
             cbar = plt.colorbar(plt.cm.ScalarMappable(norm=None, cmap=cmap), ticks=[0, 1])
-            cbar.ax.set_xticklabels(['Old', 'Recent'])
+            cbar.ax.set_yticklabels(['Recent', 'Old'])
             finalize_plot(title="Recent 1000 episode's score distribution",
                           x_label="Score",
                           y_label="Number of episodes",
