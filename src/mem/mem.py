@@ -5,7 +5,7 @@ from src.utils.text_sty import print_error
 
 
 class ReplayMemory:
-    def __init__(self, size, state_shapes, n_step, num_par_envs, stack_size=1,
+    def __init__(self, size, state_shapes, n_step, action_period, num_par_envs, stack_size=1,
                  hidden_state_shapes=None, sequence_len=None, sequence_shift=None, eta=0.9):
         """A finite buffer for saving and sampling transitions.
 
@@ -14,13 +14,13 @@ class ReplayMemory:
         """
 
         self.n_step = n_step
+        self.action_period = action_period
         self.stack_size = stack_size  # frame stacking
 
         self.sequential = hidden_state_shapes is not None
         if self.sequential:
             assert sequence_len is not None
-            assert sequence_shift is not None
-            assert sequence_shift <= sequence_len
+            assert sequence_shift is not None and sequence_shift <= sequence_len
 
         self.state_shapes = state_shapes
         self.hidden_state_shapes = hidden_state_shapes
@@ -48,7 +48,8 @@ class ReplayMemory:
         """Returns a batch of transition IDs if mode is non-sequential, else a batch of sequence IDs.
         Choice is made using the principle of prioritized experience replay."""
         if not self.sequential:
-            priorities = self.get_priorities()[:-self.n_step].flatten()
+            # Obtain priorities, consider only beginnings action periods
+            priorities = self.get_priorities()[:-self.n_step:self.action_period].flatten()
             sample_size = min(num_instances, self.get_num_learnable_transitions())
             return choice_by_priority(sample_size, priorities, alpha)
         else:
@@ -68,7 +69,11 @@ class ReplayMemory:
         return self.trans_buf.get_num_transitions()
 
     def get_num_learnable_transitions(self):
-        return max(0, self.trans_buf.get_num_transitions() - self.n_step * self.trans_buf.num_par_inst)
+        """Considers n-step and action period and returns the number of transitions
+        in this memory which are allowed to be used for training."""
+        trans_per_env = (self.trans_buf.stack_ptr - self.n_step) // self.action_period
+        total_trans = trans_per_env * self.trans_buf.num_par_inst
+        return max(0, total_trans)
 
     def get_num_sequences(self):
         if self.sequential:
@@ -170,8 +175,13 @@ class ReplayMemory:
             self.print_trans_from(trans_id, env)
 
     def delete_first(self, n):
-        """Deletes the first n transitions from this memory."""
-        steps_to_del = n // self.trans_buf.num_par_inst
+        """Deletes the first (about) n transitions from this memory."""
+        n_per_env = n // self.trans_buf.num_par_inst
+
+        # Ensure first step in transitions buffer is also beginning of an action period
+        steps_to_del = n_per_env - n_per_env % self.action_period
+
+        # Delete transitions (and sequences)
         self.trans_buf.delete_first(steps_to_del)
         if self.sequential:
             self.seq_mngr.delete_first(steps_to_del)
@@ -180,6 +190,7 @@ class ReplayMemory:
         config = {"size": self.trans_buf.size,
                   "state_shapes": self.state_shapes,
                   "n_step": self.n_step,
+                  "action_period": self.action_period,
                   "num_par_envs": self.trans_buf.num_par_inst,
                   "hidden_state_shapes": self.hidden_state_shapes,
                   "sequence_len": self.seq_mngr.seq_len if self.sequential else None,

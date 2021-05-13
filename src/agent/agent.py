@@ -116,17 +116,6 @@ class Agent:
         model.set_weights(self.online_learner.get_weights())
         return model
 
-    def init_replay_memory(self, memory_size, n_step, sequence_shift, eta):
-        return ReplayMemory(size=memory_size,
-                            state_shapes=self.state_shapes,
-                            n_step=n_step,
-                            stack_size=self.stack_size,
-                            num_par_envs=self.env.num_par_inst,
-                            hidden_state_shapes=self.stem_network.get_hidden_state_shape(),
-                            sequence_len=self.sequence_len,
-                            sequence_shift=sequence_shift,
-                            eta=eta)
-
     def load_pretrained_model(self):
         pretrained_path = "out/" + self.env.NAME + "/pretrained"
         if not os.path.exists(pretrained_path):
@@ -158,7 +147,7 @@ class Agent:
                  epsilon: ParamScheduler = ParamScheduler(0),
                  use_mc_return=False, alpha=0.7,
                  max_replay_size=None,
-                 policy="greedy",
+                 policy="greedy", action_period=1,
                  min_hist_len=0,
                  memory_size=1000000,
                  n_step=1,
@@ -183,6 +172,7 @@ class Agent:
         :param alpha: For Prioritized Experience Replay: the larger alpha the stronger prioritization
         :param max_replay_size:
         :param policy:
+        :param action_period:
         :param min_hist_len:
         :param memory_size:
         :param n_step:
@@ -203,13 +193,24 @@ class Agent:
             self.actor = self.copy_online_learner()
 
         # Init replay memory
-        self.memory = self.init_replay_memory(memory_size, n_step, sequence_shift, eta)
+        self.memory = ReplayMemory(size=memory_size,
+                                   state_shapes=self.state_shapes,
+                                   n_step=n_step,
+                                   action_period=action_period,
+                                   stack_size=self.stack_size,
+                                   num_par_envs=self.env.num_par_inst,
+                                   hidden_state_shapes=self.stem_network.get_hidden_state_shape(),
+                                   sequence_len=self.sequence_len,
+                                   sequence_shift=sequence_shift,
+                                   eta=eta)
 
         # Save all hyperparameters in txt file
         self.write_hyperparams_file(num_parallel_steps, replay_period, replay_size_multiplier,
-                                    target_sync_period, actor_sync_period, alpha, gamma, min_hist_len)
+                                    target_sync_period, actor_sync_period, alpha, gamma, min_hist_len,
+                                    action_period)
 
         new_transitions = 0
+        actions = np.zeros(self.num_par_envs)
         returns = np.zeros(self.num_par_envs)
 
         # Reset all environments
@@ -222,23 +223,25 @@ class Agent:
         for i in range(1, num_parallel_steps + 1):
             done_transitions = (i - 1) * self.num_par_envs
 
-            states = self.get_states()
+            states = self.env.get_states()
             self.stacker.add_states(states)
             hidden_states = self.get_hidden_states_of(self.actor)
 
-            # Predict the next action to take (move, rotate or do nothing)
-            actions, _ = self.plan_epsilon_greedy(self.stacker.get_stacks(), self.epsilon.get_value(done_transitions))
+            # Predict the next action to take
+            if i % action_period == 1:
+                actions, _ = self.plan_epsilon_greedy(self.stacker.get_stacks(),
+                                                      self.epsilon.get_value(done_transitions))
 
             # Perform actions, observe new environment state, level score and application state
             rewards, scores, terminals, times, wins, game_overs = self.env.step(actions)
             returns += rewards
 
             # Save observations
-            new_transitions += self.memory.memorize_observations(states, hidden_states, actions, scores,
-                                                                 rewards, terminals, gamma)
+            new_transitions += self.memory.memorize_observations(states, hidden_states, actions,
+                                                                 scores, rewards, terminals, gamma)
 
             # Handle finished envs
-            if np.any(game_overs):
+            if np.any(game_overs) and i % action_period == 0:
                 fin_env_ids = np.where(game_overs)[0]
 
                 # Save stats
@@ -609,11 +612,7 @@ class Agent:
 
         return return_avg, score_avg
 
-    def get_states(self):
-        """Fetches the current game grid."""
-        return self.env.get_states()
-
-    def just_play(self, num_par_envs=1, policy="greedy", epsilon=0, **kwargs):
+    def just_play(self, num_par_envs=1, policy="greedy", **kwargs):
         print("Just playing around...")
         self.set_policy(policy)
 
@@ -623,63 +622,47 @@ class Agent:
             self.actor = self.online_learner
             self.stacker = StateStacker(self.state_shapes, self.stack_size, self.num_par_envs)
 
-        if self.num_par_envs == 1:
-            self.play_sequential(epsilon=epsilon, **kwargs)
-        else:
-            self.play_parallel(epsilon)
+        self.play_parallel(**kwargs)
 
-    def play_sequential(self, episodes=9999999, epsilon=0, verbose=False):
-        for i in range(episodes):
-            self.env.reset()
-            self.stacker.reset_stacks([0])
-            self.env.render()
-            self.play_level(epsilon=epsilon, render_environment=True, verbose=verbose)
-
-    def play_level(self, epsilon, render_environment=True, verbose=False):
-        ret, score, env_time = 0, 0, 0
+    def play_parallel(self, epsilon=0, action_period=1, render_environment=True, verbose=False):
+        """Plays one or more envs in parallel."""
+        assert self.num_par_envs == 1 or not verbose,\
+            NotImplementedError("Verbose mode not implemented for parallel playing.")
 
         if verbose:
             print("Current ret | Predicted ret | Performed action")
             print("----------------------------------------------")
 
-        # Play a whole level
-        game_over = False
-        while not game_over:
-            state = self.env.get_states()
-            self.stacker.add_states(state)
-
-            # Predict the next action to take (move, rotate or do nothing)
-            action, pred_rets = self.plan_epsilon_greedy(self.stacker.get_stacks(), epsilon, output_return=True)
-
-            if verbose:
-                print("{:>11.2f}".format(ret) + " | " +
-                      "{:>13.2f}".format(pred_rets[0]) + " | " +
-                      "{:>16s}".format(self.env.actions[action[0]]))
-
-            # Perform action, observe new environment state, level score and application state
-            reward, score, _, env_time, _, game_over = self.env.step(action)
-
-            if render_environment:
-                self.env.render()
-
-            ret += reward[0]
-
-        if verbose:
-            print("----------------------------------------------")
-            print("Level finished with return %.2f, score %d, and time %d.\n" % (ret, score, env_time))
-
-        return ret, score
-
-    def play_parallel(self, epsilon=0):
         self.env.reset()
+        ret, score, env_time, step = 0, 0, 0, 0
+        actions = None
+
         while True:
             state = self.env.get_states()
             self.stacker.add_states(state)
-            actions, _ = self.plan_epsilon_greedy(self.stacker.get_stacks(), epsilon)
-            rewards, scores, _, env_times, _, game_overs = self.env.step(actions)
-            self.env.render()
+
+            # Plan action
+            if step % action_period == 0:
+                actions, pred_rets = self.plan_epsilon_greedy(self.stacker.get_stacks(), epsilon)
+                if verbose:
+                    print("{:>11.2f}".format(ret) + " | " +
+                          "{:>13.2f}".format(pred_rets[0]) + " | " +
+                          "{:>16s}".format(self.env.actions[actions[0]]))
+
+            # Env step
+            reward, score, _, env_time, _, game_overs = self.env.step(actions)
+            if render_environment:
+                self.env.render()
+
+            # Handle finished envs
             self.env.reset_finished()
             self.stacker.reset_stacks(np.where(game_overs)[0])
+            if verbose and game_overs[0]:
+                print("----------------------------------------------")
+                print("Level finished with return %.2f, score %d, and time %d.\n" % (ret, score, env_time))
+
+            ret += reward[0]
+            step += 1
 
     def test_on_levels(self, render=False):
         test_env = self.env.copy(1)
@@ -791,11 +774,12 @@ class Agent:
         self.memory = ReplayMemory(**self.memory.get_config())
 
     def write_hyperparams_file(self, num_parallel_steps, replay_period, replay_size_multiplier, target_sync_period,
-                               actor_sync_period, alpha, gamma, min_hist_len):
+                               actor_sync_period, alpha, gamma, min_hist_len, action_period):
         hyperparams_file = open(self.out_path + "hyperparams.txt", "w+")
         text = "num_parallel_steps: %d" % num_parallel_steps + \
                "\nnum_parallel_envs: %d" % self.num_par_envs + \
                "\npolicy: %s" % self.policy + \
+               "\naction_period: %d" % action_period + \
                "\nreplay_period: %d" % replay_period + \
                "\nreplay_size_multiplier: %d" % replay_size_multiplier + \
                "\nmin_hist_len: %d" % min_hist_len + \
@@ -883,11 +867,11 @@ def load_model(model_name, env_type, num_par_envs=None, checkpoint_no=None):
     return agent
 
 
-def load_and_play(model_name, env_type, num_par_envs=1, checkpoint_no=None, mode=None, epsilon=0):
+def load_and_play(model_name, env_type, num_par_envs, checkpoint_no=None, mode=None, **kwargs):
     agent = load_model(model_name, env_type, num_par_envs=num_par_envs, checkpoint_no=checkpoint_no)
     if mode is not None:
         agent.env.set_mode(mode)
-    agent.just_play(num_par_envs, verbose=True, epsilon=epsilon)
+    agent.just_play(num_par_envs, **kwargs)
 
 
 def load_and_test(model_name, env_type, checkpoint_no=None, mode=None, render=False):

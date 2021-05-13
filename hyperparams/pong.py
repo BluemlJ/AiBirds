@@ -12,14 +12,14 @@ env.set_seed(seed)
 
 hyperparams = {
     # General
-    "name": "debug",
+    "name": "action_period_4",
     "num_parallel_steps": 400000,
     "seed": seed,
     "env": env,
 
     # Training and synchronization
     "learning_rate": ParamScheduler(init_value=0.00025),
-    "replay_period": 32,
+    "replay_period": 64,
     "replay_size_multiplier": 4,
     "replay_batch_size": 256,
     "alpha": 0.5,
@@ -37,6 +37,7 @@ hyperparams = {
     "epsilon": ParamScheduler(init_value=1, decay_mode="lin",
                               milestones=[50000, 1000000, 2000000, 3000000],
                               milestone_values=[1, 0.1, 0.01, 0]),
+    "action_period": 4,
 
     # Miscellaneous
     "memory_size": 400000,

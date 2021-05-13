@@ -19,7 +19,7 @@ hyperparams = {  # max episode length: 18000
 
     # Training and synchronization
     "learning_rate": ParamScheduler(init_value=0.00025),
-    "replay_period": 4,
+    "replay_period": 16,
     "replay_size_multiplier": 8,
     "replay_batch_size": 32,
     "alpha": 0,
@@ -39,6 +39,7 @@ hyperparams = {  # max episode length: 18000
     "epsilon": ParamScheduler(init_value=1, decay_mode="lin",
                               milestones=[50000, 1000000, 2000000],
                               milestone_values=[1, 0.1, 0.01]),
+    "action_period": 4,
 
     # Miscellaneous
     "memory_size": 400000,  # was actually 1M
