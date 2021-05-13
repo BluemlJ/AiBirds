@@ -1,7 +1,7 @@
 from tensorflow.keras.layers import ReLU, Convolution2D, BatchNormalization, Flatten, Dense, \
     MaxPool2D, Concatenate, LSTM, TimeDistributed, Layer, Input
 from tensorflow.keras.initializers import GlorotNormal, VarianceScaling
-from src.agent.comp.stem import StemNetwork
+from src.agent.model.stem import StemNetwork
 import tensorflow as tf
 import numpy as np
 
@@ -108,7 +108,7 @@ class RainbowImproved(StemNetwork):
         conv3 = Convolution2D(64, (3, 3), strides=1, padding='valid', activation="relu",
                               kernel_initializer=VarianceScaling(scale=2),
                               use_bias=False, name="conv_3")(conv2)
-        conv4 = Convolution2D(128, (7, 7), strides=1, padding='valid', activation="relu",
+        conv4 = Convolution2D(self.hidden_size, (7, 7), strides=1, padding='valid', activation="relu",
                               kernel_initializer=VarianceScaling(scale=2),
                               use_bias=False, name="conv_4")(conv3)
         flat = Flatten(name='flat')(conv4)

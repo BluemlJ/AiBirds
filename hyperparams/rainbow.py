@@ -1,6 +1,6 @@
 from src.envs import *
-import src.agent.comp as comp
-from src.utils.utils import setup_hardware, set_seed
+import src.agent.model as model
+from src.utils.utils import set_seed
 import tensorflow as tf
 from src.utils.params import ParamScheduler
 
@@ -34,8 +34,8 @@ hyperparams = {
     "n_step": 3,
 
     # Model
-    "stem_network": comp.generic.Rainbow(),
-    "q_network": comp.q_network.DoubleQNetwork(512, 512),
+    "stem_network": model.generic.Rainbow(),
+    "q_network": model.q_network.DoubleQNetwork(512, 512),
 
     # Policy
     "epsilon": ParamScheduler(init_value=1, decay_mode="lin",

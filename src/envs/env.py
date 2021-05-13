@@ -85,6 +85,10 @@ class ParallelEnvironment(Environment, metaclass=ABCMeta):
         """Returns a simple textual visualization of a given state. Input shape equals state_shapes."""
         return "State representation not implemented."
 
+    def state2plot(self, state, **kwargs):
+        """Plots a state (e.g. a screen image) and saves it to out_path if not None."""
+        pass
+
     def print_all_current_states(self):
         states = self.get_states()
         for env_id in range(self.num_par_inst):

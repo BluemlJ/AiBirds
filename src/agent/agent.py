@@ -9,7 +9,7 @@ from src.utils import Statistics, ParamScheduler, copy_object_with_config, plot_
     ask_to_override_model, config2json, json2config, remove_folder, log_model_graph, random_choice_along_last_axis
 from src.mem.mem import ReplayMemory
 from src.envs.env import ParallelEnvironment
-from src.agent.comp import *
+from src.agent.model import *
 from src.utils.stack import StateStacker
 
 # Miscellaneous
@@ -334,7 +334,7 @@ class Agent:
         exp_len = self.memory.get_num_transitions()
 
         # Get list of transitions
-        states, _, actions, n_step_rewards, n_step_mask, next_states, _, terminals = \
+        states, _, actions, n_step_rewards, step_mask, next_states, _ = \
             self.memory.get_transitions(trans_ids)
 
         # Obtain Monte Carlo return for each transition
@@ -352,7 +352,7 @@ class Agent:
         if self.use_mc_return:
             target_returns = mc_returns
         else:
-            target_returns = get_n_step_return(pred_next_returns, n_step_rewards, n_step_mask, gamma, terminals)
+            target_returns = get_n_step_return(pred_next_returns, n_step_rewards, step_mask, gamma)
         td_errs = target_returns - pred_returns
 
         # Update transition priorities according to TD errors
@@ -374,8 +374,9 @@ class Agent:
                                                         batch_size=self.replay_batch_size,
                                                         sample_weights=sample_weights)
 
-        self.stats.denote_learning_stats(loss, individual_losses, self.optimizer.learning_rate.numpy(),
-                                         trans_ids, predictions, targets, self.env, self.memory)
+        self.stats.denote_learning_stats(loss, self.optimizer.learning_rate.numpy())
+        self.stats.log_extreme_losses(individual_losses, trans_ids, predictions, targets, n_step_rewards, step_mask,
+                                      self.env, self.memory, self.out_path)
 
         return len(trans_ids)
 
@@ -843,18 +844,16 @@ def compute_sample_weights(sample_priorities, sample_probabilities, total_size, 
     return np.abs(np.multiply(weights, sample_priorities))
 
 
-def get_n_step_return(pred_next_returns, n_step_rewards, n_step_mask, gamma, terminals):
+def get_n_step_return(pred_next_returns, n_step_rewards, step_mask, gamma):
     # Prepare
     n = n_step_rewards.shape[-1]
     step_axis = n_step_rewards.ndim - 1
-    final_step_mask = n_step_mask[:, -1] & ~ terminals
-    mask = np.append(n_step_mask, np.expand_dims(final_step_mask, axis=1), axis=step_axis)
 
     # Compute n-step return
     discounts = gamma ** np.arange(n + 1)
     rewards_returns = np.append(n_step_rewards, np.expand_dims(pred_next_returns, axis=1), axis=step_axis)
     rewards_returns_discounted = rewards_returns * discounts
-    rewards_returns_discounted[~ mask] = 0
+    rewards_returns_discounted[~ step_mask] = 0
     n_step_returns = np.sum(rewards_returns_discounted, axis=step_axis)
 
     return n_step_returns

@@ -158,10 +158,19 @@ class TransitionsBuffer:
 
     def get_transitions(self, trans_indices, steps, stack_size):  # TODO: implement for sequential
         """
-        :param trans_indices: list of lists of form [buff_pos, env_id]
+        :param trans_indices: list of lists of form [buff_pos, env_id], where request_shape := buff_pos.shape
         :param steps: n of n-steps
         :param stack_size:
         :return:
+        - states: stacked states of shape (*request_shape, *state_shape, stack_size)
+        - hidden_states: if sequential mode, model's hidden states of first step, has shape
+           (*request_shape, *hidden_shape)
+        - actions: actions taken in first step, has shape request_shape
+        - n_step_rewards: rewards gained for each step, shape (*request_shape, n)
+        - step_mask: Boolean mask of shape (*request_shape, n) indicating valid steps
+        - next_states: stacked next (n-th) states of shape (*request_shape, *state_shape, stack_size)
+        - next_hidden_states: if sequential mode, model's hidden states of next (n-th) step, has shape
+           (*request_shape, *hidden_shape)
         """
         step_indices, env_indices = trans_indices
         if np.any(step_indices > self.stack_ptr - steps) or np.any(env_indices >= self.num_par_inst):
@@ -173,7 +182,6 @@ class TransitionsBuffer:
         states, hidden_states = self.get_states(trans_indices, stack_size)
 
         actions = self.get_actions(trans_indices)
-        terminals = self.get_terminals(trans_indices)
 
         # Obtain n-step rewards
         lookahead_axis = step_indices.ndim
@@ -183,18 +191,18 @@ class TransitionsBuffer:
         n_step_indices = step_indices_repeated + lookaheads
         n_step_rewards = self.scalar_obs[n_step_indices, env_indices_repeated, self.REWARDS]
 
-        # Build n-step mask to accommodate n-step sequences which terminate before n
-        n_step_mask = np.ones(shape=n_step_indices.shape, dtype="bool")
-        for k in range(1, steps):
+        # Build mask to accommodate n-step sequences which terminate during next n steps
+        step_mask = np.ones(shape=(*n_step_indices.shape[:-1], steps + 1), dtype="bool")
+        for k in range(1, steps + 1):
             lookahead_indices = step_indices + k - 1
-            n_step_mask[:, k] = n_step_mask[:, k - 1] \
-                                & ~ self.scalar_obs[lookahead_indices, env_indices, self.TERMINALS].astype("bool")
+            step_mask[:, k] = step_mask[:, k - 1] \
+                              & ~ self.scalar_obs[lookahead_indices, env_indices, self.TERMINALS].astype("bool")
 
         next_step_indices = np.copy(step_indices) + steps
         next_states, next_hidden_states = self.get_states([next_step_indices, env_indices], stack_size)
 
-        return states, hidden_states, actions, n_step_rewards, n_step_mask, \
-               next_states, next_hidden_states, terminals
+        return states, hidden_states, actions, n_step_rewards, step_mask, \
+               next_states, next_hidden_states
 
     def get_num_transitions(self):
         return self.stack_ptr * self.num_par_inst
@@ -220,7 +228,7 @@ class TransitionsBuffer:
                 num_items += np.prod(shape)
         num_items += self.scalar_obs.shape[-1]
         num_items *= self.size
-        gib = num_items * self.state_dtype.itemsize / 2**30
+        gib = num_items * self.state_dtype.itemsize / 2 ** 30
         print("Reserving %.2f GiB of RAM for TransitionsBuffer (ReplayMemory)..." % gib)
 
 

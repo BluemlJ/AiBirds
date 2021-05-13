@@ -1,7 +1,7 @@
 import tensorflow as tf
 from abc import ABCMeta
 from tensorflow.keras.layers import Dense, LeakyReLU, Layer, ReLU
-from src.agent.comp.noisy import NoisyDense
+from src.agent.model.noisy import NoisyDense
 
 
 class QNetwork(Layer, metaclass=ABCMeta):

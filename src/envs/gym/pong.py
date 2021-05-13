@@ -1,7 +1,9 @@
 import gym
 import cv2
 import numpy as np
+from concurrent import futures
 from src.envs.gym.gym_env import ParScreenGymEnv
+from src.utils.utils import plot_grayscale
 
 
 RESIZE_DIM = (84, 84)
@@ -24,6 +26,7 @@ class Pong(ParScreenGymEnv):
         self.state_shape = (*RESIZE_DIM, 1)
         self.states = np.zeros(shape=(self.num_par_inst, *self.state_shape))
         self.update_states()
+        self.thread_pool = futures.ThreadPoolExecutor(max_workers=self.num_par_inst)
 
     def update_states(self, ids=None):
         ids = range(self.num_par_inst) if ids is None else ids
@@ -37,27 +40,32 @@ class Pong(ParScreenGymEnv):
 
     def preprocess(self, screen):
         gray_screen = cv2.cvtColor(screen, cv2.COLOR_BGR2GRAY)
-        state = cv2.resize(gray_screen, RESIZE_DIM, interpolation=cv2.INTER_LINEAR).astype("float32") / 255
+        cropped = gray_screen[35:195]
+        state = cv2.resize(cropped, RESIZE_DIM, interpolation=cv2.INTER_LINEAR).astype("float32") / 255
         return np.expand_dims(state, axis=-1)
 
-    def step(self, actions):  # TODO: implement and test threading
+    def step(self, actions):
         rewards = np.zeros(self.num_par_inst)
         actions = actions + 1  # convert into original action space
+        tasks = []
 
+        # Execute all envs in threads
         for i, (action, gym_env) in enumerate(zip(actions, self.gym_envs)):
-            observation, reward, done, info = gym_env.step(action)
-            self.states[i] = self.fetch_state(i)
-            rewards[i] += reward  # * 0.5
-            self.scores[i] += reward
-            self.game_overs[i] = done
+            tasks += [self.thread_pool.submit(gym_env.step, action)]
+
+        # collect observations
+        for env_id in range(self.num_par_inst):
+            observation, reward, done, info = tasks[env_id].result()
+            self.states[env_id] = self.fetch_state(env_id)
+            rewards[env_id] += reward  # * 0.5
+            self.scores[env_id] += reward
+            self.game_overs[env_id] = done
 
         self.times += 1
-        self.game_overs = self.times >= MAX_EPISODE_LEN
+        # self.game_overs |= self.times >= MAX_EPISODE_LEN
         goal_against = rewards < 0
         terminals = self.game_overs | goal_against
         self.wins[self.game_overs] = self.scores[self.game_overs] > 0
-
-        # self.render()
 
         return rewards, self.scores, terminals, self.times, self.wins, self.game_overs
 
@@ -66,3 +74,7 @@ class Pong(ParScreenGymEnv):
 
     def get_state_shapes(self):
         return [self.state_shape]
+
+    def state2plot(self, state, **kwargs):
+        image = (state * 255).astype("uint8")
+        plot_grayscale(image, **kwargs)

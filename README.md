@@ -30,6 +30,7 @@ The idea originated from the [Angry Birds AI Competition](http://aibirds.org/).
       domains (transitions, episodes, wall-clock time, etc.)
     * Permanence: save and reload entire training runs, including model weights and statistics
     * Pre-training: unsupervised model pre-training on randomly generated environment data
+    * Train sample control: sample states with extreme loss during training are logged and plotted automatically
     * and much more
     
 ### Soon to come

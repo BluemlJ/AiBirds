@@ -6,7 +6,7 @@ import time
 
 from src.utils.utils import finalize_plot, user_agrees_to, sec2hhmmss, num2text, \
     data2pickle, pickle2data
-from src.envs.env import Environment
+from src.envs.env import ParallelEnvironment
 from src.utils.logger import Logger
 from src.mem.mem import ReplayMemory
 from src.utils.text_sty import orange, red, bold, print_info
@@ -38,9 +38,9 @@ class Statistics:
     # Other constants
     WINDOW_SIZE_EPISODES = 500
     WINDOW_SIZE_CYCLES = 10
-    EXTREME_LOSS_FACTOR = 1000
+    EXTREME_LOSS_FACTOR = 100
 
-    def __init__(self, env_type: Environment = None, env: Environment = None, log_path=None):
+    def __init__(self, env_type: ParallelEnvironment = None, env: ParallelEnvironment = None, log_path=None):
         assert env_type is not None or env is not None
         self.env_type = type(env) if env_type is None else env_type
         self.env = env
@@ -97,8 +97,7 @@ class Statistics:
             transition_text = memory.get_trans_text(trans_id, self.env)
             self.logger.log_new_record(ret, transition_text)
 
-    def denote_learning_stats(self, loss, individual_losses, learning_rate, trans_ids, predictions,
-                              targets, env, memory):
+    def denote_learning_stats(self, loss, learning_rate):
         assert self.timer_started
 
         if self.cycle_ptr == len(self.cycle_stats):
@@ -108,8 +107,6 @@ class Statistics:
         seconds = time.time() - self.total_timer
         self.cycle_stats[self.cycle_ptr] = [trans, seconds, loss, learning_rate]
         self.cycle_ptr += 1
-
-        self.log_extreme_losses(individual_losses, trans_ids, predictions, targets, env, memory)
 
     def get_num_episodes(self):
         return self.episode_ptr
@@ -484,7 +481,8 @@ class Statistics:
                           y_label="Number of episodes",
                           out_path=out_path + "score_dist.png")
 
-    def log_extreme_losses(self, individual_losses, trans_ids, predictions, targets, env, memory):
+    def log_extreme_losses(self, individual_losses, trans_ids, predictions, targets, n_step_rewards,
+                           n_step_mask, env: ParallelEnvironment, memory: ReplayMemory, out_path):
         if self.logger is None:
             return
         moving_avg_loss = get_moving_avg_val(self.get_losses(), self.WINDOW_SIZE_CYCLES)
@@ -492,13 +490,23 @@ class Statistics:
             extreme_loss = individual_losses > (moving_avg_loss * self.EXTREME_LOSS_FACTOR)
             if np.any(extreme_loss):
                 print_info("Extreme loss encountered!")
-                for trans_id, loss, prediction, target in zip(trans_ids[extreme_loss],
-                                                              individual_losses[extreme_loss],
-                                                              predictions[extreme_loss],
-                                                              targets[extreme_loss]):
+                out_path = out_path + "extreme_loss_samples/"
+                if not os.path.exists(out_path):
+                    os.makedirs(out_path)
+                extreme_loss_data = zip(trans_ids[extreme_loss],
+                                        individual_losses[extreme_loss],
+                                        predictions[extreme_loss],
+                                        targets[extreme_loss],
+                                        n_step_rewards[extreme_loss],
+                                        n_step_mask[extreme_loss])
+                for trans_id, loss, prediction, target, n_step_r, mask in extreme_loss_data:
+                    state = memory.get_states(trans_id)[0][0]
+                    total_time = time.time() - self.total_timer
+                    env.state2plot(state, title="Trans ID = %d" % trans_id, x_label="Loss = %f" % loss,
+                                   out_path=out_path + "%06d_%d" % (total_time, trans_id))
                     self.logger.log_extreme_loss(self.get_num_cycles(), loss, moving_avg_loss,
-                                                 str(prediction), str(target),
-                                                 memory.get_trans_text(trans_id, env) + "\n")
+                                                 prediction, target, n_step_r, mask,
+                                                 memory.get_trans_text(trans_id, env) + "\n", env.actions)
 
 
 def get_moving_avg_val(values, window_size):
@@ -673,7 +681,7 @@ def compare_statistics(model_names, env_type, labels=None,
                     plot_variance=plot_variance)
 
 
-def plot_everything(out_path, env_type: Environment, **kwargs):
+def plot_everything(out_path, env_type: ParallelEnvironment, **kwargs):
     # (Re-)create output folder
     if os.path.exists(out_path):
         shutil.rmtree(out_path)

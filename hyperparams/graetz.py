@@ -1,5 +1,5 @@
 from src.envs import *
-import src.agent.comp as comp
+import src.agent.model as model
 from src.utils.params import ParamScheduler
 from src.utils.utils import set_seed
 
@@ -24,15 +24,16 @@ hyperparams = {  # max episode length: 18000
     "replay_batch_size": 32,
     "alpha": 0,
     "min_hist_len": 50000,
+    "max_replay_size": 1600,
 
     # Learning target returns
     "gamma": 0.99,
-    "n_step": 0,
+    "n_step": 1,
     "target_sync_period": 200,
 
     # Model
-    "stem_network": comp.generic.RainbowImproved(1024),
-    "q_network": comp.q_network.DoubleQNetwork(512, 512),
+    "stem_network": model.generic.RainbowImproved(1024),
+    "q_network": model.q_network.DoubleQNetwork(),
 
     # Policy
     "epsilon": ParamScheduler(init_value=1, decay_mode="lin",
@@ -40,6 +41,6 @@ hyperparams = {  # max episode length: 18000
                               milestone_values=[1, 0.1, 0.01]),
 
     # Miscellaneous
-    "memory_size": 400000,
+    "memory_size": 400000,  # was actually 1M
     "stack_size": 4,
 }

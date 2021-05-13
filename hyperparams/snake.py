@@ -1,5 +1,5 @@
 from src.envs import *
-import src.agent.comp as comp
+import src.agent.model as model
 from src.utils.utils import set_seed
 from src.utils.params import ParamScheduler
 
@@ -31,8 +31,8 @@ hyperparams = {
     "gamma": 0.999,
 
     # Model
-    "stem_network": comp.generic.StemNetwork2D1D(latent_dim=128),
-    "q_network": comp.q_network.DoubleQNetwork(64, 64),
+    "stem_network": model.generic.StemNetwork2D1D(latent_dim=128),
+    "q_network": model.q_network.DoubleQNetwork(64, 64),
 
     # Policy
     "epsilon": ParamScheduler(init_value=0),

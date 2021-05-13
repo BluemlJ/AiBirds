@@ -8,26 +8,37 @@ import os
 import tensorflow as tf
 
 from numpy.random import RandomState  # , SeedSequence, MT19937
-from src.utils.text_sty import print_warning
+from src.utils.text_sty import print_warning, yellow
 
 
-def finalize_plot(title, x_label, y_label, out_path, legend=False, logarithmic=False,
+def finalize_plot(title, x_label=None, y_label=None, out_path=None, legend=False, logarithmic=False,
                   time_domain=False, show=False, keep=False):
     plt.title(title)
-    plt.xlabel(x_label)
-    plt.ylabel(y_label)
+    if x_label is not None:
+        plt.xlabel(x_label)
+    if y_label is not None:
+        plt.ylabel(y_label)
     if legend:
         plt.legend()
     if logarithmic:
         plt.yscale("log")
     if time_domain:
         plt.gca().xaxis.set_major_formatter(plt.FuncFormatter(hrs2hhmm))
-    plt.savefig(out_path, dpi=400)
+    if out_path is not None:
+        plt.savefig(out_path, dpi=400)
     if show:
         assert not keep
         plt.show()
     elif not keep:
         plt.close()
+
+
+def plot_grayscale(image, **kwargs):
+    plt.imshow(image, cmap="binary", vmin=0, vmax=255)
+    ax = plt.gca()
+    ax.axes.xaxis.set_ticks([])
+    ax.axes.yaxis.set_ticks([])
+    finalize_plot(**kwargs)
 
 
 def plot_validation(values, title, ylabel, output_path):
@@ -71,7 +82,7 @@ def angle2vector(alpha):
 def ask_to_override_model(path):
     question = "There is already a model saved at '%s'. You can either override (delete) the existing\n" \
                "model or you can abort the program. Do you want to override the model? (y/n)" % path
-    if user_agrees_to(question):
+    if user_agrees_to(yellow(question)):
         remove_folder(path)
     else:
         print("No files changed. Shutting down program.")

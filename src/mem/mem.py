@@ -159,7 +159,7 @@ class ReplayMemory:
                "\nReward:     " + str(self.get_rewards(trans_id)) + \
                "\nScore:      " + str(self.get_scores(trans_id)) + \
                "\nTerminal:   " + str(self.get_terminals(trans_id)) + \
-               "\nPriority:   " + str(self.get_priorities(trans_id))
+               "\nPriority:   %.2f" % self.get_priorities(trans_id)
         return text
 
     def print_entire_memory(self, env):

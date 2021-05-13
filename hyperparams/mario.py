@@ -1,5 +1,5 @@
 from src.envs import *
-import src.agent.comp as comp
+import src.agent.model as model
 from src.utils.params import ParamScheduler
 from src.utils.utils import set_seed
 
@@ -7,7 +7,7 @@ seed = 894165
 set_seed(seed)
 
 # Environment
-env = SuperMario(num_par_inst=1)
+env = SuperMario(num_par_inst=8)
 env.set_seed(seed)
 
 hyperparams = {
@@ -31,8 +31,8 @@ hyperparams = {
     "n_step": 1,
 
     # Model
-    "stem_network": comp.generic.RainbowImproved(1024),
-    "q_network": comp.q_network.DoubleQNetwork(128, 128),
+    "stem_network": model.generic.RainbowImproved(1024),
+    "q_network": model.q_network.DoubleQNetwork(128, 128),
 
     # Policy
     "epsilon": ParamScheduler(init_value=1, decay_mode="lin",
