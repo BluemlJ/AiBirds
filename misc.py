@@ -6,7 +6,7 @@ from src.utils.utils import setup_hardware
 from src.agent.agent import load_and_play
 
 setup_hardware(use_gpu=True, gpu_memory_limit=4096)
-load_and_play("debug_wrong_targets_3", Pong, num_par_envs=1, action_period=4, verbose=True)
+load_and_play("deterministic_frame_skipping_4", Pong, num_par_envs=8, epsilon=0.01)
 
 # compare_statistics(["larger_lr", "gamma", "constant_lr"],
 #                    env_type=Pong)

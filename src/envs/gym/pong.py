@@ -15,16 +15,17 @@ class Pong(ParScreenGymEnv):
     TIME_RELEVANT = False
     WINS_RELEVANT = True
 
-    def __init__(self, num_par_inst):
+    def __init__(self, num_par_inst, frame_skipping=4):
         """For env names see: https://gym.openai.com/envs/#atari"""
         actions = ["IDLE", "UP", "DOWN"]
-        envs = [gym.make("Pong-v0") for i in range(num_par_inst)]
+        atari_env_name = "PongDeterministic-v%d" % frame_skipping
+        envs = [gym.make(atari_env_name) for i in range(num_par_inst)]
         screen_shape = envs[0].observation_space.shape
         super(Pong, self).__init__(num_par_inst=num_par_inst, gym_envs=envs, actions=actions,
                                    screen_shape=screen_shape)
 
         self.state_shape = (*RESIZE_DIM, 1)
-        self.states = np.zeros(shape=(self.num_par_inst, *self.state_shape))
+        self.states = np.zeros(shape=(self.num_par_inst, *self.state_shape), dtype="uint8")
         self.update_states()
         self.thread_pool = futures.ThreadPoolExecutor(max_workers=self.num_par_inst)
 
@@ -36,13 +37,10 @@ class Pong(ParScreenGymEnv):
     def fetch_state(self, env_id):
         screen = self.gym_envs[env_id].env.ale.getScreenRGB()
         self.parallel_screen.update_screens(screen, env_id)
-        return self.preprocess(screen)
+        return preprocess_screen(screen)
 
-    def preprocess(self, screen):
-        gray_screen = cv2.cvtColor(screen, cv2.COLOR_BGR2GRAY)
-        cropped = gray_screen[35:195]
-        state = cv2.resize(cropped, RESIZE_DIM, interpolation=cv2.INTER_LINEAR).astype("float32") / 255
-        return np.expand_dims(state, axis=-1)
+    def preprocess(self, states):
+        return [states[0].astype("float32") / 255]
 
     def step(self, actions):
         rewards = np.zeros(self.num_par_inst)
@@ -76,5 +74,12 @@ class Pong(ParScreenGymEnv):
         return [self.state_shape]
 
     def state2plot(self, state, **kwargs):
-        image = (state * 255).astype("uint8")
-        plot_grayscale(image, **kwargs)
+        """Expects state with uint8 values in range 0...255."""
+        plot_grayscale(state[0], **kwargs)
+
+
+def preprocess_screen(screen):
+    gray_screen = cv2.cvtColor(screen, cv2.COLOR_BGR2GRAY)
+    cropped = gray_screen[35:195]
+    state = cv2.resize(cropped, RESIZE_DIM, interpolation=cv2.INTER_LINEAR)
+    return np.expand_dims(state, axis=-1)

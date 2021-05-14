@@ -7,7 +7,7 @@ seed = 894165
 set_seed(seed)
 
 # Environment
-env = Pong(num_par_inst=50)
+env = Pong(num_par_inst=50, frame_skipping=4)
 env.set_seed(seed)
 
 hyperparams = {  # max episode length: 18000
@@ -39,7 +39,6 @@ hyperparams = {  # max episode length: 18000
     "epsilon": ParamScheduler(init_value=1, decay_mode="lin",
                               milestones=[50000, 1000000, 2000000],
                               milestone_values=[1, 0.1, 0.01]),
-    "action_period": 4,
 
     # Miscellaneous
     "memory_size": 400000,  # was actually 1M

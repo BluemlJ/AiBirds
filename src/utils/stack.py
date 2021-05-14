@@ -5,11 +5,12 @@ from src.utils.utils import shapes2arrays, increase_last_dim
 class StateStacker:
     """Conveniently manages frames/states for frame-stacking."""
 
-    def __init__(self, state_shapes, stack_size, num_par_inst):
+    def __init__(self, state_shapes, state_dtypes, stack_size, num_par_inst):
         self.stack_size = stack_size
         self.state_shapes = state_shapes
+        self.state_dtypes = state_dtypes
         self.stack_shapes = increase_last_dim(state_shapes, factor=stack_size)
-        self.stacks = shapes2arrays(self.stack_shapes, preceded_by=(num_par_inst,))
+        self.stacks = shapes2arrays(self.stack_shapes, self.state_dtypes, preceded_by=(num_par_inst,))
         self.stack_empty = np.ones(num_par_inst, dtype="bool")
 
     def get_stack_shapes(self):

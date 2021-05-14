@@ -16,7 +16,7 @@ class TransitionsBuffer:
     TERMINALS = 4
     PRIORITIES = 5
 
-    def __init__(self, size, state_shapes, hidden_shapes, par_inst):
+    def __init__(self, size, state_shapes, state_dtypes, hidden_shapes, par_inst):
         self.buffer_len = size // par_inst
         self.size = self.buffer_len * par_inst  # number of transitions in total
         self.stack_ptr = 0
@@ -24,17 +24,17 @@ class TransitionsBuffer:
 
         self.num_par_inst = par_inst
         self.state_shapes = state_shapes
+        self.state_dtypes = state_dtypes
         self.hidden_state_shapes = hidden_shapes
 
         self.scalar_obs = np.zeros(shape=(self.buffer_len, self.num_par_inst, 6), dtype="float32")
 
-        self.state_dtype = np.dtype("float32")
         self.print_mem_usage()
         self.states = shapes2arrays(state_shapes, preceded_by=(self.buffer_len, self.num_par_inst),
-                                    dtype=self.state_dtype)
+                                    dtypes=self.state_dtypes)
         if self.saving_hidden_states:
             self.hidden_states = shapes2arrays(hidden_shapes, preceded_by=(self.buffer_len, self.num_par_inst),
-                                               dtype=self.state_dtype)
+                                               dtypes=self.state_dtypes)
         else:
             self.hidden_states = None
 
@@ -220,15 +220,15 @@ class TransitionsBuffer:
         self.stack_ptr -= n
 
     def print_mem_usage(self):
-        num_items = np.float64(0)
-        for shape in self.state_shapes:
-            num_items += np.prod(shape)
+        bytes_per_trans = np.int64(0)
+        for shape, dtype in zip(self.state_shapes, self.state_dtypes):
+            bytes_per_trans += np.prod(shape) * dtype.itemsize
         if self.saving_hidden_states:
             for shape in self.hidden_state_shapes:
-                num_items += np.prod(shape)
-        num_items += self.scalar_obs.shape[-1]
-        num_items *= self.size
-        gib = num_items * self.state_dtype.itemsize / 2 ** 30
+                bytes_per_trans += np.prod(shape) * self.hidden_states[0].itemsize
+        bytes_per_trans += self.scalar_obs.shape[-1] * self.scalar_obs.itemsize
+        total_bytes = bytes_per_trans * self.size
+        gib = total_bytes / 2 ** 30
         print("Reserving %.2f GiB of RAM for TransitionsBuffer (ReplayMemory)..." % gib)
 
 

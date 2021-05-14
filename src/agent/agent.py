@@ -11,6 +11,7 @@ from src.mem.mem import ReplayMemory
 from src.envs.env import ParallelEnvironment
 from src.agent.model import *
 from src.utils.stack import StateStacker
+from src.utils.text_sty import print_warning
 
 # Miscellaneous
 PLOT_SAVE_STATS_PERIOD = 1000  # number of transitions between each learning statistics plot
@@ -44,11 +45,12 @@ class Agent:
         self.env = env
         self.num_par_envs = self.env.num_par_inst
         self.state_shapes = self.env.get_state_shapes()
+        self.state_dtypes = [state_comp.dtype for state_comp in self.env.get_states()]
         self.num_actions = self.env.get_number_of_actions()
 
         # Frame stacking
         self.stack_size = stack_size
-        self.stacker = StateStacker(self.state_shapes, self.stack_size, self.num_par_envs)
+        self.stacker = StateStacker(self.state_shapes, self.state_dtypes, self.stack_size, self.num_par_envs)
         self.stack_shapes = self.stacker.get_stack_shapes()
 
         if name == "debug":
@@ -70,7 +72,7 @@ class Agent:
         self.optimizer = optimizer
         self.online_learner = self.init_online_learner()
         self.q_net_layer_id = np.where([isinstance(layer, QNetwork) for layer in self.online_learner.layers])[0][0]
-        log_model_graph(self.online_learner, self.stack_shapes)
+        # log_model_graph(self.online_learner, self.stack_shapes)
 
         if use_pretrained:
             self.load_pretrained_model()
@@ -147,7 +149,7 @@ class Agent:
                  epsilon: ParamScheduler = ParamScheduler(0),
                  use_mc_return=False, alpha=0.7,
                  max_replay_size=None,
-                 policy="greedy", action_period=1,
+                 policy="greedy",
                  min_hist_len=0,
                  memory_size=1000000,
                  n_step=1,
@@ -172,7 +174,6 @@ class Agent:
         :param alpha: For Prioritized Experience Replay: the larger alpha the stronger prioritization
         :param max_replay_size:
         :param policy:
-        :param action_period:
         :param min_hist_len:
         :param memory_size:
         :param n_step:
@@ -180,6 +181,8 @@ class Agent:
         :param eta:
         :param verbose:
         """
+        self.check_replay_size(replay_size_multiplier, replay_period, max_replay_size)
+
         self.set_policy(policy)
 
         self.policy = policy
@@ -195,8 +198,8 @@ class Agent:
         # Init replay memory
         self.memory = ReplayMemory(size=memory_size,
                                    state_shapes=self.state_shapes,
+                                   state_dtypes=self.state_dtypes,
                                    n_step=n_step,
-                                   action_period=action_period,
                                    stack_size=self.stack_size,
                                    num_par_envs=self.env.num_par_inst,
                                    hidden_state_shapes=self.stem_network.get_hidden_state_shape(),
@@ -206,11 +209,9 @@ class Agent:
 
         # Save all hyperparameters in txt file
         self.write_hyperparams_file(num_parallel_steps, replay_period, replay_size_multiplier,
-                                    target_sync_period, actor_sync_period, alpha, gamma, min_hist_len,
-                                    action_period)
+                                    target_sync_period, actor_sync_period, alpha, gamma, min_hist_len)
 
         new_transitions = 0
-        actions = np.zeros(self.num_par_envs)
         returns = np.zeros(self.num_par_envs)
 
         # Reset all environments
@@ -228,9 +229,8 @@ class Agent:
             hidden_states = self.get_hidden_states_of(self.actor)
 
             # Predict the next action to take
-            if i % action_period == 1:
-                actions, _ = self.plan_epsilon_greedy(self.stacker.get_stacks(),
-                                                      self.epsilon.get_value(done_transitions))
+            actions, _ = self.plan_epsilon_greedy(self.stacker.get_stacks(),
+                                                  self.epsilon.get_value(done_transitions))
 
             # Perform actions, observe new environment state, level score and application state
             rewards, scores, terminals, times, wins, game_overs = self.env.step(actions)
@@ -241,7 +241,7 @@ class Agent:
                                                                  scores, rewards, terminals, gamma)
 
             # Handle finished envs
-            if np.any(game_overs) and i % action_period == 0:
+            if np.any(game_overs):
                 fin_env_ids = np.where(game_overs)[0]
 
                 # Save stats
@@ -272,8 +272,8 @@ class Agent:
                 self.reset_noise()  # for Noisy Nets (if activated)
                 replay_size = replay_size_multiplier * new_transitions
                 if self.memory.get_num_transitions() >= min_hist_len and replay_size > 0:
-                    if max_replay_size is not None:
-                        replay_size = min(replay_size, max_replay_size)
+                    if max_replay_size is not None and replay_size > max_replay_size:
+                        replay_size = max_replay_size
                     learned_trans = self.learn(replay_size, gamma, epochs=replay_epochs, alpha=alpha, verbose=verbose)
                     new_transitions = max(0, new_transitions - learned_trans)
 
@@ -336,24 +336,24 @@ class Agent:
         # Obtain total number of experienced transitions
         exp_len = self.memory.get_num_transitions()
 
-        # Get list of transitions
+        # Get transitions data and preprocess
         states, _, actions, n_step_rewards, step_mask, next_states, _ = \
             self.memory.get_transitions(trans_ids)
-
-        # Obtain Monte Carlo return for each transition
-        mc_returns = self.memory.get_mc_returns(trans_ids)
+        states_prep = self.env.preprocess(states)
+        next_states_prep = self.env.preprocess(next_states)
 
         # Predict returns (i.e. values V(s)) for all states s
-        q_vals = self.online_learner.predict(states, batch_size=self.replay_batch_size)
+        q_vals = self.online_learner.predict(states_prep, batch_size=self.replay_batch_size)
         pred_returns = np.max(q_vals, axis=1)
 
         # Predict next returns
-        next_q_vals = self.target_learner.predict(next_states, batch_size=self.replay_batch_size)
+        next_q_vals = self.target_learner.predict(next_states_prep, batch_size=self.replay_batch_size)
         pred_next_returns = np.max(next_q_vals, axis=1)
 
         # Compute (n-step or MC) return targets and temporal-difference (TD) errors (the "surprise" of the agent)
         if self.use_mc_return:
-            target_returns = mc_returns
+            # Obtain Monte Carlo return for each transition
+            target_returns = self.memory.get_mc_returns(trans_ids)
         else:
             target_returns = get_n_step_return(pred_next_returns, n_step_rewards, step_mask, gamma)
         td_errs = target_returns - pred_returns
@@ -362,8 +362,8 @@ class Agent:
         self.memory.set_priorities(trans_ids, np.abs(td_errs))
 
         # Prepare inputs and targets for fitting
-        inputs = states
-        targets = self.target_learner.predict(states, batch_size=self.replay_batch_size)
+        inputs = states_prep
+        targets = self.target_learner.predict(states_prep, batch_size=self.replay_batch_size)
         targets[range(len(trans_ids)), actions] = target_returns
 
         # Compute sample weights
@@ -378,8 +378,8 @@ class Agent:
                                                         sample_weights=sample_weights)
 
         self.stats.denote_learning_stats(loss, self.optimizer.learning_rate.numpy())
-        self.stats.log_extreme_losses(individual_losses, trans_ids, predictions, targets, n_step_rewards, step_mask,
-                                      self.env, self.memory, self.out_path)
+        self.stats.log_extreme_losses(individual_losses, trans_ids, states, predictions, targets, n_step_rewards,
+                                      step_mask, self.env, self.memory, self.out_path)
 
         return len(trans_ids)
 
@@ -551,14 +551,14 @@ class Agent:
 
         batch_size = self.num_par_envs if self.sequential else self.replay_batch_size
 
-        q_vals = self.actor.predict(states, batch_size=batch_size)
+        q_vals = self.actor.predict(self.env.preprocess(states), batch_size=batch_size)
         if self.sequential:
             q_vals = np.squeeze(q_vals, axis=1)
 
         # Pick action according to policy
         if self.policy == "greedy":
             actions = q_vals.argmax(axis=1)
-        else:
+        else:  # softmax
             probs = np.exp(q_vals) / np.sum(np.exp(q_vals), axis=1, keepdims=True)
             actions = random_choice_along_last_axis(probs)
 
@@ -588,30 +588,6 @@ class Agent:
         experience_length = self.memory.get_num_transitions()
         self.learn_instances(experience_length, gamma, batch_size, epochs, alpha)
 
-    def test_performance(self, num_levels=100):
-        """Perform validation of the agent on the validation set. On all validation levels,
-        the agent plays without epsilon and does not learn from the experience."""
-
-        # Initialize return list (list of normalized final scores for each level played)
-        returns = []
-        scores = []
-
-        # Play levels and save observations
-        print("Start performance test...")
-        for i in range(num_levels):
-            self.env.reset()
-            ret, score = self.play_level(epsilon=None)
-            returns += [ret]
-            scores += [score]
-        print("Finished performance test.")
-
-        return_avg = np.average(returns)
-        score_avg = np.average(scores)
-        print("Return average:", return_avg)
-        print("Score average:", score_avg)
-
-        return return_avg, score_avg
-
     def just_play(self, num_par_envs=1, policy="greedy", **kwargs):
         print("Just playing around...")
         self.set_policy(policy)
@@ -620,11 +596,11 @@ class Agent:
             self.reinit_env(num_par_envs)
             self.num_par_envs = num_par_envs
             self.actor = self.online_learner
-            self.stacker = StateStacker(self.state_shapes, self.stack_size, self.num_par_envs)
+            self.stacker = StateStacker(self.state_shapes, self.state_dtypes, self.stack_size, self.num_par_envs)
 
         self.play_parallel(**kwargs)
 
-    def play_parallel(self, epsilon=0, action_period=1, render_environment=True, verbose=False):
+    def play_parallel(self, epsilon=0, render_environment=True, verbose=False):
         """Plays one or more envs in parallel."""
         assert self.num_par_envs == 1 or not verbose,\
             NotImplementedError("Verbose mode not implemented for parallel playing.")
@@ -635,19 +611,17 @@ class Agent:
 
         self.env.reset()
         ret, score, env_time, step = 0, 0, 0, 0
-        actions = None
 
         while True:
             state = self.env.get_states()
             self.stacker.add_states(state)
 
             # Plan action
-            if step % action_period == 0:
-                actions, pred_rets = self.plan_epsilon_greedy(self.stacker.get_stacks(), epsilon)
-                if verbose:
-                    print("{:>11.2f}".format(ret) + " | " +
-                          "{:>13.2f}".format(pred_rets[0]) + " | " +
-                          "{:>16s}".format(self.env.actions[actions[0]]))
+            actions, pred_rets = self.plan_epsilon_greedy(self.stacker.get_stacks(), epsilon)
+            if verbose:
+                print("{:>11.2f}".format(ret) + " | " +
+                      "{:>13.2f}".format(pred_rets[0]) + " | " +
+                      "{:>16s}".format(self.env.actions[actions[0]]))
 
             # Env step
             reward, score, _, env_time, _, game_overs = self.env.step(actions)
@@ -774,12 +748,11 @@ class Agent:
         self.memory = ReplayMemory(**self.memory.get_config())
 
     def write_hyperparams_file(self, num_parallel_steps, replay_period, replay_size_multiplier, target_sync_period,
-                               actor_sync_period, alpha, gamma, min_hist_len, action_period):
+                               actor_sync_period, alpha, gamma, min_hist_len):
         hyperparams_file = open(self.out_path + "hyperparams.txt", "w+")
         text = "num_parallel_steps: %d" % num_parallel_steps + \
                "\nnum_parallel_envs: %d" % self.num_par_envs + \
                "\npolicy: %s" % self.policy + \
-               "\naction_period: %d" % action_period + \
                "\nreplay_period: %d" % replay_period + \
                "\nreplay_size_multiplier: %d" % replay_size_multiplier + \
                "\nmin_hist_len: %d" % min_hist_len + \
@@ -819,6 +792,12 @@ class Agent:
                 ask_to_override_model(out_path)
         os.makedirs(out_path, exist_ok=True)
         return out_path
+
+    def check_replay_size(self, replay_size_multiplier, replay_period, max_replay_size):
+        exp_replay_size = replay_size_multiplier * replay_period * self.num_par_envs
+        if max_replay_size is not None and exp_replay_size > max_replay_size:
+            print_warning("Warning: Expected replay size %d is larger than given max replay size %d." %
+                          (exp_replay_size, max_replay_size))
 
 
 def compute_sample_weights(sample_priorities, sample_probabilities, total_size, beta=0.5):

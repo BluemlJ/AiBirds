@@ -3,13 +3,14 @@ import matplotlib.pyplot as plt
 import os
 import shutil
 import time
+import imageio
 
-from src.utils.utils import finalize_plot, user_agrees_to, sec2hhmmss, num2text, \
-    data2pickle, pickle2data
+from src.utils.utils import finalize_plot, user_agrees_to, sec2hhmmss, data2pickle, pickle2data, element_wise_index, \
+    get_state_from_stack
 from src.envs.env import ParallelEnvironment
 from src.utils.logger import Logger
 from src.mem.mem import ReplayMemory
-from src.utils.text_sty import orange, red, bold, print_info
+from src.utils.text_sty import orange, red, bold, print_info, num2text
 from skimage.measure import block_reduce
 
 # For comparison plots
@@ -481,7 +482,7 @@ class Statistics:
                           y_label="Number of episodes",
                           out_path=out_path + "score_dist.png")
 
-    def log_extreme_losses(self, individual_losses, trans_ids, predictions, targets, n_step_rewards,
+    def log_extreme_losses(self, individual_losses, trans_ids, stacks, predictions, targets, n_step_rewards,
                            n_step_mask, env: ParallelEnvironment, memory: ReplayMemory, out_path):
         if self.logger is None:
             return
@@ -493,17 +494,19 @@ class Statistics:
                 out_path = out_path + "extreme_loss_samples/"
                 if not os.path.exists(out_path):
                     os.makedirs(out_path)
-                extreme_loss_data = zip(trans_ids[extreme_loss],
+                extreme_loss_data = zip(np.where(extreme_loss)[0],
+                                        trans_ids[extreme_loss],
                                         individual_losses[extreme_loss],
                                         predictions[extreme_loss],
                                         targets[extreme_loss],
                                         n_step_rewards[extreme_loss],
                                         n_step_mask[extreme_loss])
-                for trans_id, loss, prediction, target, n_step_r, mask in extreme_loss_data:
-                    state = memory.get_states(trans_id)[0][0]
+                for extr_loss_id, trans_id, loss, prediction, target, n_step_r, mask in extreme_loss_data:
+                    stack = element_wise_index(stacks, extr_loss_id)
                     total_time = time.time() - self.total_timer
-                    env.state2plot(state, title="Trans ID = %d" % trans_id, x_label="Loss = %f" % loss,
-                                   out_path=out_path + "%06d_%d" % (total_time, trans_id))
+                    stack2gif(stack, env, memory.stack_size, memory.state_shapes, title="Trans ID = %d" % trans_id,
+                              x_label="Loss = %f" % loss,
+                              out_path=out_path + "%06d_%d" % (total_time, trans_id))
                     self.logger.log_extreme_loss(self.get_num_cycles(), loss, moving_avg_loss,
                                                  prediction, target, n_step_r, mask,
                                                  memory.get_trans_text(trans_id, env) + "\n", env.actions)
@@ -920,3 +923,30 @@ def enlarge_stats(stat_array, incr_size, to_size):
     new_episode_stats = np.zeros(shape=(new_size, shape[1]))
     new_episode_stats[:shape[0]] = stat_array
     return new_episode_stats
+
+
+def stack2gif(stack: list, env: ParallelEnvironment, stack_size, state_shapes, out_path, **kwargs):
+    if stack_size == 1:
+        env.state2plot(stack, out_path=out_path, **kwargs)
+    else:
+        # Generate plots in a temporary location
+        if not os.path.exists("tmp"):
+            os.makedirs("tmp")
+        plot_locations = []
+        for i in range(stack_size):
+            state = get_state_from_stack(stack, i, state_shapes)
+            plot_loc = "tmp/%d.png" % i
+            env.state2plot(state, out_path=plot_loc, **kwargs)
+            if not os.path.exists(plot_loc):  # in case state2plot is not implemented
+                return
+            plot_locations += [plot_loc]
+
+        # Convert the plots to a GIF, saved in out_path
+        plots = []
+        for plot_loc in plot_locations:
+            plots += [imageio.imread(plot_loc)]
+        imageio.mimwrite(out_path + '.gif', plots, fps=2)
+
+        # Remove temporary files
+        for plot_path in plot_locations:
+            os.remove(plot_path)

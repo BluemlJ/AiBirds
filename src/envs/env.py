@@ -77,6 +77,11 @@ class ParallelEnvironment(Environment, metaclass=ABCMeta):
         are environments where the number of actions is determined only after initialization."""
         return len(self.actions)
 
+    def preprocess(self, states):
+        """Used to preprocess states right before they're used as model input (e.g. turn image
+        pixel values from 0...255 int to 0...1 float). Default preprocess function is identity."""
+        return states
+
     def render(self):
         """Renders the current state of the environment(s)."""
         raise NotImplementedError

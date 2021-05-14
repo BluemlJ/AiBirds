@@ -80,8 +80,7 @@ def angle2vector(alpha):
 
 
 def ask_to_override_model(path):
-    question = "There is already a model saved at '%s'. You can either override (delete) the existing\n" \
-               "model or you can abort the program. Do you want to override the model? (y/n)" % path
+    question = "There is already a model saved at '%s'. Override? (y/n)" % path
     if user_agrees_to(yellow(question)):
         remove_folder(path)
     else:
@@ -173,23 +172,6 @@ def del_first(lst, n):
     lst[m:] = 0
 
 
-def num2text(num):
-    if num == 0:
-        return "0"
-    elif np.abs(num) < 1:
-        return "%.2f" % num
-    elif np.abs(num) < 1000:
-        return str(num)
-    elif np.abs(num) < 1000000:
-        num_rd = np.round(num / 1000)
-        text = "%dK" % num_rd
-        return text
-    else:
-        num_rd = np.round(num / 1000000)
-        text = "%dM" % num_rd
-        return text
-
-
 def pad_data_with_zero_instances(data, pad_len):
     """Takes data (e.g., a 'too small' batch) and pads it with zero-value instances at the end."""
     data_shape_len = len(data.shape)
@@ -250,10 +232,14 @@ def num2bool(arr):
     return arr == 1
 
 
-def shapes2arrays(shapes, preceded_by=None, dtype="float32"):
+def shapes2arrays(shapes, dtypes=None, preceded_by=None):
     if preceded_by is not None:
         shapes = [(*preceded_by, *shape) for shape in shapes]
-    return [np.zeros(shape=shape, dtype=dtype) for shape in shapes]
+    if dtypes is None:
+        dtypes = len(shapes) * ["float32"]
+    elif type(dtypes) == str:
+        dtypes = len(shapes) * [dtypes]
+    return [np.zeros(shape=shape, dtype=dtype) for shape, dtype in zip(shapes, dtypes)]
 
 
 def increase_last_dim(shapes, factor):
@@ -268,3 +254,20 @@ def random_choice_along_last_axis(p):
     assert np.all(np.abs(np.sum(p, axis=-1)) - 1 < 1e-6)
     r = np.expand_dims(np.random.rand(*p.shape[:-1]), axis=-1)
     return (p.cumsum(axis=-1) > r).argmax(axis=-1)
+
+
+def element_wise_index(lst: list, indices):
+    """Takes a list of iterables which all have same first dimension and returns the list
+    of results when indexing each iterable with indices."""
+    selected = []
+    for iterable in lst:
+        selected += [iterable[indices]]
+    return selected
+
+
+def get_state_from_stack(stack, idx, state_shapes):
+    state = []
+    for comp, shape in zip(stack, state_shapes):
+        depth = shape[-1]
+        state += [comp[..., idx * depth:(idx + 1) * depth]]
+    return state

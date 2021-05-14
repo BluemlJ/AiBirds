@@ -1,4 +1,4 @@
-from src.utils.utils import num2text
+from src.utils.text_sty import num2text
 from tabulate import tabulate
 import os
 import numpy as np

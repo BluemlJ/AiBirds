@@ -1,3 +1,4 @@
+import numpy as np
 from sty import Style, RgbFg, fg, ef, rs
 
 """Colors and formatting for console text"""
@@ -38,3 +39,26 @@ def print_warning(text):
 
 def print_error(text):
     print(red(text))
+
+
+def num2text(num):
+    if num == 0:
+        return "0"
+    elif np.abs(num) < 1:
+        return "%.2f" % num
+    elif np.abs(num) < 10 and num % 1 != 0:
+        return "%.1f" % num
+    elif np.abs(num) < 1000:
+        return "%.0f" % num
+    elif np.abs(num) < 10000:
+        thousands = num / 1000
+        return "%.1fK" % thousands
+    elif np.abs(num) < 1e6:
+        thousands = num / 1000
+        return "%.0fK" % thousands
+    elif np.abs(num) < 1e7:
+        millions = num / 1e6
+        return "%.1fM" % millions
+    else:
+        millions = num / 1e6
+        return "%.0fM" % millions
