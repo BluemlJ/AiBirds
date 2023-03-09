@@ -32,7 +32,8 @@ class ReplayMemory:
         else:
             self.seq_mngr = None
 
-        self.max_priority = 1
+        self.valid_first_step = True  # True => all trans. saved in first step are first trans. in resp. episode
+        self.max_priority = 1  # TODO: to be deleted
 
     def memorize_observations(self, states, hidden_states, actions, scores, rewards, terminals, gamma):
         """Takes observations of one time-step from all parallel environments simultaneously. Returns
@@ -48,7 +49,8 @@ class ReplayMemory:
         """Returns a batch of transition IDs if mode is non-sequential, else a batch of sequence IDs.
         Choice is made using the principle of prioritized experience replay."""
         if not self.sequential:
-            priorities = self.get_priorities()[:-self.n_step].flatten()
+            valid_start = 0 if self.valid_first_step else self.stack_size - 1
+            priorities = self.get_priorities()[valid_start:-self.n_step].flatten()
             sample_size = min(num_instances, self.get_num_learnable_transitions())
             return choice_by_priority(sample_size, priorities, alpha)
         else:
@@ -71,6 +73,8 @@ class ReplayMemory:
         """Returns the number of transitions in this memory which are allowed to be used
         for training. In particular, excludes incomplete n-steps."""
         trans_per_env = self.trans_buf.stack_ptr - self.n_step
+        if not self.valid_first_step:
+            trans_per_env -= self.stack_size - 1
         total_trans = trans_per_env * self.trans_buf.num_par_inst
         return max(0, total_trans)
 
@@ -181,6 +185,9 @@ class ReplayMemory:
         self.trans_buf.delete_first(steps_to_del)
         if self.sequential:
             self.seq_mngr.delete_first(steps_to_del)
+
+        # Transitions at start of buffer are not (necessarily) first transitions of resp. episode
+        self.valid_first_step = False
 
     def get_config(self):
         config = {"size": self.trans_buf.size,

@@ -5,15 +5,21 @@ import json
 import pickle
 import ctypes  # for flashing window in taskbar under Windows
 import os
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = "2"  # let TF only print errors
+import inspect
 import tensorflow as tf
 
 from numpy.random import RandomState  # , SeedSequence, MT19937
-from src.utils.text_sty import print_warning, yellow
+from src.utils.text_sty import print_warning, yellow, print_info
 
 
-def finalize_plot(title, x_label=None, y_label=None, out_path=None, legend=False, logarithmic=False,
+def finalize_plot(title=None, x_label=None, y_label=None, out_path=None, legend=False, logarithmic=False,
                   time_domain=False, show=False, keep=False):
-    plt.title(title)
+    if out_path is None and not show:
+        print_info("Info: A plot is generated but without any effect (neither show nor save).")
+
+    if title is not None:
+        plt.title(title)
     if x_label is not None:
         plt.xlabel(x_label)
     if y_label is not None:
@@ -89,7 +95,8 @@ def ask_to_override_model(path):
 
 
 def remove_folder(path):
-    shutil.rmtree(path)
+    # os.rmdir(path)
+    shutil.rmtree(path, ignore_errors=True)
 
 
 def config2text(config: dict):
@@ -191,6 +198,7 @@ def set_seed(seed):
 
 
 def setup_hardware(use_gpu=True, gpu_memory_limit=None):
+    # When on Windows, use TensorFlow version 2.10.1 max! Otherwise, GPU not usable.
     if use_gpu:
         os.environ["CUDA_VISIBLE_DEVICES"] = "0"  # make GPU visible
     else:
@@ -202,7 +210,20 @@ def setup_hardware(use_gpu=True, gpu_memory_limit=None):
         tf.config.experimental.set_virtual_device_configuration(gpus[0], memory_config)
 
 
+def split_params(params, fn):
+    fn_params = {}
+    accepted_params = inspect.signature(fn).parameters.keys()
+    for param in list(params.keys()):
+        if param in accepted_params:
+            fn_params[param] = params.pop(param)
+    other_params = params
+    return fn_params, other_params
+
+
 def log_model_graph(model, input_shapes, log_dir="tensorboard/graphs/"):
+    """Logs the TF computation graph for Tensorboard. Run Tensorboard with
+    tensorboard --logdir tensorboard/graphs"""
+
     if os.path.exists(log_dir):
         remove_folder(log_dir)
 
@@ -212,7 +233,7 @@ def log_model_graph(model, input_shapes, log_dir="tensorboard/graphs/"):
 
     writer = tf.summary.create_file_writer(log_dir)
 
-    dummy_input = [tf.random.uniform((1,) + input_shape) for input_shape in input_shapes]
+    dummy_input = [tf.random.uniform((64,) + input_shape) for input_shape in input_shapes]
     tf.summary.trace_on(graph=True, profiler=True)
     trace_fn(dummy_input)
     with writer.as_default():

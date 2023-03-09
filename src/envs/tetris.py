@@ -214,7 +214,8 @@ class Tetris(ParallelEnvironment):
     def get_config(self):
         config = {"height": self.height,
                   "width": self.width}
-        return super(Tetris, self).get_config().update(config)
+        config.update(super(Tetris, self).get_config())
+        return config
 
     def rotate_figure(self, ids, direction):
         shapes_old = self.fb_shapes[ids].copy()
@@ -339,8 +340,8 @@ class Tetris(ParallelEnvironment):
         # self.clock.tick(self.speed)
 
     def state2text(self, state):
-        state_2d, state_1d = state
-        return self.state_2d_to_text(state_2d)
+        field = state[0]
+        return self.state_2d_to_text(field)
 
     def state_2d_to_text(self, state):
         lying_block_grid = state[:, :, 0]

@@ -61,8 +61,8 @@ class Pong(ParScreenGymEnv):
 
         self.times += 1
         # self.game_overs |= self.times >= MAX_EPISODE_LEN
-        goal_against = rewards < 0
-        terminals = self.game_overs | goal_against
+        segment_over = rewards != 0
+        terminals = self.game_overs | segment_over
         self.wins[self.game_overs] = self.scores[self.game_overs] > 0
 
         return rewards, self.scores, terminals, self.times, self.wins, self.game_overs
@@ -80,6 +80,6 @@ class Pong(ParScreenGymEnv):
 
 def preprocess_screen(screen):
     gray_screen = cv2.cvtColor(screen, cv2.COLOR_BGR2GRAY)
-    cropped = gray_screen[35:195]
+    cropped = gray_screen[33:195]
     state = cv2.resize(cropped, RESIZE_DIM, interpolation=cv2.INTER_LINEAR)
     return np.expand_dims(state, axis=-1)

@@ -72,9 +72,9 @@ for i in range(ANGLE_RESOLUTION * TAP_TIME_RESOLUTION):
 def run_science_birds():
     """Starts the Angry Birds simulation software (if it isn't running already)."""
     print("Starting Science Birds...")
-    if "Science Birds.exe" not in (p.NAME() for p in psutil.process_iter()):
-        subprocess.Popen(["src/envs/ab/Science Birds 0.3.8/Science Birds.exe"],
-                         cwd="src/envs/ab/Science Birds 0.3.8/")
+    # if "Science Birds.exe" not in (p.NAME() for p in psutil.process_iter()):
+    subprocess.Popen(["src/envs/ab/Science Birds 0.3.8/Science Birds.exe"],
+                     cwd="src/envs/ab/Science Birds 0.3.8/")
 
 
 class AngryBirds(ParallelEnvironment):

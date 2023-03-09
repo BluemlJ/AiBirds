@@ -76,7 +76,7 @@ class Snake(ParallelEnvironment):
             self.fruit_fields[ids] = False
             self.times_since_last_fruit[ids] = 0
 
-        super(Snake, self).reset()
+        super(Snake, self).reset(ids)
         self.__init_env(ids)
 
     def __init_env(self, ids=None):

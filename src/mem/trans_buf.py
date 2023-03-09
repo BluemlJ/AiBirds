@@ -54,7 +54,7 @@ class TransitionsBuffer:
             self.compute_returns_for(terminals, gamma)
 
     def compute_returns_for(self, env_ids, gamma):
-        comp_return = env_ids.copy()  # computing return
+        comp_return = env_ids.copy()
         trans_ptr = 1
         while np.any(comp_return):
             self.scalar_obs[self.stack_ptr - trans_ptr, comp_return, self.RETURNS] = \
@@ -91,16 +91,16 @@ class TransitionsBuffer:
             lookbacks = np.zeros(shape=(*step_indices.shape, stack_size), dtype="int")
             valid = np.ones(step_indices.shape, dtype="bool")
             for frame in range(1, stack_size):
-                valid &= step_indices - frame >= 0 & \
+                valid &= (step_indices - frame >= 0) & \
                          ~ self.get_terminals([step_indices - frame, env_indices])
                 lookbacks[..., stack_size - 1 - frame] = lookbacks[..., stack_size - frame] - valid
 
+            # Transform single-frame indices to stacked-frame indices
             step_stack_indices = np.repeat(np.expand_dims(step_indices, axis=-1), stack_size, axis=-1) + lookbacks
             env_stack_indices = np.repeat(np.expand_dims(env_indices, axis=-1), stack_size, axis=-1)
 
             # Extract from state components
-            states = get_stack_state_comp(self.states, step_stack_indices,
-                                          env_stack_indices)
+            states = get_stack_state_comp(self.states, step_stack_indices, env_stack_indices)
             if self.saving_hidden_states:
                 hidden_states = get_stack_state_comp(self.hidden_states, step_stack_indices,
                                                      env_stack_indices)

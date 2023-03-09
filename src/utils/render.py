@@ -27,7 +27,8 @@ class ParallelScreen:
             self.screens[scr_ids] = screens
 
     def _init_windows(self):
-        window_placements = spread_windows(self.num_screens)
+        window_aspect_ratio = self.screen_shape[1] / self.screen_shape[0]
+        window_placements = spread_windows(self.num_screens, window_aspect_ratio)
         for scr_id in range(self.num_screens):
             win_name = 'Env %d' % scr_id
             cv2.namedWindow(win_name, cv2.WINDOW_NORMAL)
@@ -61,37 +62,69 @@ class ParallelScreen:
         plt.close()
 
 
-def spread_windows(n):
+def spread_windows(n, window_aspect_ratio=1):
     """Returns window coordinates and sizes for n windows distributed evenly over the entire screen.
-    Assumes the windows to be quadratic"""
+    Window aspect ratio is width / height."""
     assert n > 0
 
-    margin = 0.05  # relative, percent of window size
-    screen = screeninfo.get_monitors()[0]
-    aspect_ratio = screen.width / screen.height
-    max_win_size = screen.width // 2
+    # Constants
+    win_marg = 0.1  # space between windows, percent of window size
+    vertical_screen_pad = 0.05  # padding tob and bottom each, percent of screen height
+    horizontal_screen_pad = 0.05  # padding left and right each, percent of screen width
+    max_rel_win_size = 0.5  # percent of screen size
 
-    # Determine a pleasant number of columns and rows of windows
+    # Get screen info
+    screen = screeninfo.get_monitors()[0]
+    screen_aspect_ratio = screen.width / screen.height
+
+    # Determine render area width and height
+    render_area_width = screen.width * (1 - 2 * horizontal_screen_pad)
+    render_area_height = screen.height * (1 - 2 * vertical_screen_pad)
+
+    # Set maximum window width to avoid oversized windows
+    max_win_width = int(min(screen.width * max_rel_win_size,
+                            screen.height * max_rel_win_size * window_aspect_ratio))
+
+    # Set initial number of columns and rows
     cols = n
     rows = 1
+
+    # Set initial window width (same for all windows)
+    w = render_area_width / (cols * (1 + win_marg))
+    w = min(w, max_win_width)
+
+    # Try out different row and column numbers to get largest possible window width
     for rows in range(2, n):
-        cols = np.ceil(n / rows)
-        if rows * aspect_ratio > cols:
+        cols = int(np.ceil(n / rows))
+
+        # Predict window width and height (constant for all windows)
+        w_exp = render_area_width / (cols + (cols - 1) * win_marg)
+        h_exp = render_area_height / (rows + (rows - 1) * win_marg)
+        w_exp = min(w_exp, max_win_width)
+        w_exp = min(w_exp, h_exp * window_aspect_ratio)
+
+        if w_exp > w:
+            w = w_exp
+        else:
             rows -= 1
             cols = int(np.ceil(n / rows))
             break
 
-    w = int(screen.width // (cols * (1 + 2 * margin)))
-    w = min(w, max_win_size)
-    h = w
+    # Compute window height
+    h = w / window_aspect_ratio
 
-    # Arrange windows
-    top_screen_pad = (screen.height - rows * h * (1 + 2 * margin)) // 2
+    # Compute outer paddings and margins
+    top_screen_pad = screen.height * vertical_screen_pad
+    left_screen_pad = screen.width * horizontal_screen_pad
+    top_area_marg = (render_area_height - rows * h - (rows - 1) * h * win_marg) / 2
+    left_area_marg = (render_area_width - cols * w - (cols - 1) * w * win_marg) / 2
+
+    # Compute window placement data
     window_placements = []
     for r in range(rows):
         for c in range(cols):
-            x = int(c * w * (1 + 2 * margin) + margin * w)
-            y = int(r * h * (1 + 2 * margin) + top_screen_pad)
-            window_placements += [(x, y, w, h)]
+            x = int(c * w * (1 + win_marg) + left_screen_pad + left_area_marg)
+            y = int(r * h * (1 + win_marg) + top_screen_pad + top_area_marg)
+            window_placements += [(x, y, int(w), int(h))]
 
     return window_placements

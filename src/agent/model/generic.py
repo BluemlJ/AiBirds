@@ -54,7 +54,64 @@ class StemNetwork2D1D(StemNetwork):
         return {"latent_dim": self.latent_dim}
 
 
-class StemNetwork2D(StemNetwork):
+class StemNetwork2DSmall(StemNetwork):
+    def __init__(self, latent_dim):
+        super().__init__(sequential=False)
+        self.latent_dim = latent_dim
+
+    def get_functional_graph(self, input_shapes, batch_size=None):
+        input_shape_2d = input_shapes[0]
+
+        input = Input(shape=input_shape_2d, name="input")
+
+        conv1 = Convolution2D(32, (4, 4), strides=1, padding='same', activation="relu",
+                              kernel_initializer=GlorotNormal,
+                              use_bias=False, name="conv_1")(input)
+        pool1 = MaxPool2D((2, 2))(conv1)
+        conv2 = Convolution2D(128, (2, 2), strides=1, padding='same', activation="relu",
+                              kernel_initializer=GlorotNormal,
+                              use_bias=False, name="conv_2")(pool1)
+        pool2 = MaxPool2D((2, 2))(conv2)
+        flat = Flatten(name='flat')(pool2)
+
+        latent = Dense(self.latent_dim, activation="relu", name="latent")(flat)
+
+        return [input], latent
+
+    def get_config(self):
+        return {"latent_dim": self.latent_dim}
+
+
+class StemNetwork2DSmallNoDense(StemNetwork):
+    def __init__(self, latent_dim):
+        super().__init__(sequential=False)
+        self.latent_dim = latent_dim
+
+    def get_functional_graph(self, input_shapes, batch_size=None):
+        input_shape_2d = input_shapes[0]
+
+        input = Input(shape=input_shape_2d, name="input")
+
+        conv1 = Convolution2D(32, (4, 4), strides=1, padding='same', activation="relu",
+                              kernel_initializer=GlorotNormal,
+                              use_bias=False, name="conv_1")(input)
+        pool1 = MaxPool2D((2, 2))(conv1)
+        conv2 = Convolution2D(128, (2, 2), strides=1, padding='same', activation="relu",
+                              kernel_initializer=GlorotNormal,
+                              use_bias=False, name="conv_2")(pool1)
+        pool2 = MaxPool2D((2, 2))(conv2)
+        conv3 = Convolution2D(self.latent_dim, (5, 2), strides=1, padding='same', activation="relu",
+                              kernel_initializer=GlorotNormal,
+                              use_bias=False, name="conv_3")(pool2)
+        latent = Flatten(name='flat')(conv3)
+
+        return [input], latent
+
+    def get_config(self):
+        return {"latent_dim": self.latent_dim}
+
+
+class StemNetwork2DLarge(StemNetwork):
     def __init__(self, latent_dim):
         super().__init__(sequential=False)
         self.latent_dim = latent_dim
@@ -100,18 +157,18 @@ class RainbowImproved(StemNetwork):
         input = Input(shape=input_shape, name="input")
 
         conv1 = Convolution2D(32, (8, 8), strides=4, padding='valid', activation="relu",
-                              kernel_initializer=VarianceScaling(scale=2),
+                              kernel_initializer=VarianceScaling(scale=1),
                               use_bias=False, name="conv_1")(input)
         conv2 = Convolution2D(64, (4, 4), strides=2, padding='valid', activation="relu",
-                              kernel_initializer=VarianceScaling(scale=2),
+                              kernel_initializer=VarianceScaling(scale=1),
                               use_bias=False, name="conv_2")(conv1)
         conv3 = Convolution2D(64, (3, 3), strides=1, padding='valid', activation="relu",
-                              kernel_initializer=VarianceScaling(scale=2),
+                              kernel_initializer=VarianceScaling(scale=1),
                               use_bias=False, name="conv_3")(conv2)
         conv4 = Convolution2D(self.hidden_size, (7, 7), strides=1, padding='valid', activation="relu",
-                              kernel_initializer=VarianceScaling(scale=2),
+                              kernel_initializer=VarianceScaling(scale=1),
                               use_bias=False, name="conv_4")(conv3)
-        flat = Flatten(name='flat')(conv4)
+        flat = ReLU()(Flatten(name='flat')(conv4))
 
         return [input], flat
 

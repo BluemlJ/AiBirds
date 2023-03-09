@@ -1,6 +1,7 @@
 import tensorflow as tf
 from abc import ABCMeta
 from tensorflow.keras.layers import Dense, LeakyReLU, Layer, ReLU
+from tensorflow.keras.initializers import VarianceScaling, GlorotNormal
 from src.agent.model.noisy import NoisyDense
 
 
@@ -52,7 +53,7 @@ class DoubleQNetwork(QNetwork):
             self.v_h = Layer()
 
         if self.noise_std_init == 0:
-            self.v = Dense(1, name='V')
+            self.v = Dense(1, name='V')  # , kernel_initializer=VarianceScaling(scale=2))
         else:
             self.v = NoisyDense(1, self.noise_std_init, name='V')
 
@@ -66,10 +67,10 @@ class DoubleQNetwork(QNetwork):
             self.a_h = Layer()
 
         if self.noise_std_init == 0:
-            self.a = Dense(self.num_actions, name='A')
+            self.a = Dense(self.num_actions, name='A')  # , kernel_initializer=VarianceScaling(scale=2))
         else:
             self.a = NoisyDense(self.num_actions, self.noise_std_init, name='A')
-        
+
         super(DoubleQNetwork, self).build(input_shape)
 
     def get_config(self):
@@ -79,8 +80,11 @@ class DoubleQNetwork(QNetwork):
         return config
 
     def call(self, inputs, training=False, mask=None):
-        v = self.v(ReLU()(self.v_h(inputs)))
-        a = self.a(ReLU()(self.a_h(inputs)))
+        # v_stream, a_stream = tf.split(inputs, 2, axis=1)  # TODO: only for graetz
+        # v = self.v(v_stream)
+        # a = self.a(a_stream)
+        v = self.v(self.v_h(inputs))
+        a = self.a(self.a_h(inputs))
         a_avg = tf.reduce_mean(a, axis=self.q_value_axis, keepdims=True, name='A_mean')
         # State-action values: Q(s, a) = V(s) + A(s, a) - A_mean(s, a)
         return v + a - a_avg

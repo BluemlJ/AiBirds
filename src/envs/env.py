@@ -44,7 +44,8 @@ class ParallelEnvironment(Environment, metaclass=ABCMeta):
             self.wins[env_ids] = False
 
     def reset_finished(self):
-        self.reset(np.where(self.game_overs)[0])
+        if np.any(self.game_overs):
+            self.reset(np.where(self.game_overs)[0])
 
     def step(self, actions):
         """The given actions are executed in the environment and the environment

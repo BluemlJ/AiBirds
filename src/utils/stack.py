@@ -35,8 +35,8 @@ class StateStacker:
         assert not np.any(self.stack_empty)
         return self.stacks
 
-    def reset_stacks(self, ids):
-        self.stack_empty[ids] = True
+    def reset_stacks(self, env_ids):
+        self.stack_empty[env_ids] = True
 
     def get_frame(self, frame_id, env_id=None):
         """Returns a frame from the given position ID.

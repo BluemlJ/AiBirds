@@ -39,7 +39,7 @@ class Statistics:
     # Other constants
     WINDOW_SIZE_EPISODES = 500
     WINDOW_SIZE_CYCLES = 10
-    EXTREME_LOSS_FACTOR = 100
+    EXTREME_LOSS_FACTOR = 500
 
     def __init__(self, env_type: ParallelEnvironment = None, env: ParallelEnvironment = None, log_path=None):
         assert env_type is not None or env is not None
@@ -57,7 +57,8 @@ class Statistics:
         self.cycle_ptr = 0
 
         self.ma_score_record = 0
-        self.current_run_trans_no = 0
+        self.init_trans_no = 0
+        self.init_cyc_no = 0
         self.continue_training = False
 
         self.total_timer = 0
@@ -91,7 +92,6 @@ class Statistics:
         self.episode_stats[self.episode_ptr] = [trans, seconds, ret, score, t, win,
                                                 ret_rec, score_rec, time_rec]
         self.episode_ptr += 1
-        self.current_run_trans_no += t
 
         if new_return_record and self.logger is not None and self.env is not None:
             trans_id = memory.idx2id([memory.trans_buf.stack_ptr - 1, env_id])
@@ -181,7 +181,7 @@ class Statistics:
             return np.nan
 
     def get_current_learning_rate(self):
-        if self.get_num_cycles() > 0 and self.current_run_trans_no > 0:
+        if self.get_num_cycles() - self.init_cyc_no > 0:
             return self.get_learning_rates()[-1]
         else:
             return np.nan
@@ -235,6 +235,8 @@ class Statistics:
         self.cycle_stats = stats_dict["cycle_stats"]
         self.episode_ptr = stats_dict["episode_ptr"]
         self.cycle_ptr = stats_dict["cycle_ptr"]
+        self.init_trans_no = self.get_current_transition()
+        self.init_cyc_no = self.cycle_ptr - 1
         self.total_timer = self.episode_stats[self.episode_ptr - 1, self.SECONDS]
 
     def set_stats_old(self, stats_dict):
@@ -246,8 +248,11 @@ class Statistics:
 
         for key, i in [("returns", self.RETURN), ("scores", self.SCORE),
                        ("times", self.TIME), ("wins", self.WIN)]:
-            values = stats_dict[key]
-            self.episode_stats[:len(values), i] = values
+            try:
+                values = stats_dict[key]
+                self.episode_stats[:len(values), i] = values
+            except Exception as e:
+                print_info("No %s stats included. Ignoring for this conversion." % key)
 
         # Read in cycle stats
         num_cycles = len(stats_dict["losses"])
@@ -256,8 +261,11 @@ class Statistics:
             self._enlarge_cycle_stats(to_size=num_cycles)
 
         for key, i in [("losses", self.LOSS), ("learning_rates", self.LEARNING_RATE)]:
-            values = stats_dict[key]
-            self.cycle_stats[:len(values), i] = values
+            try:
+                values = stats_dict[key]
+                self.cycle_stats[:len(values), i] = values
+            except Exception as e:
+                print_info("No %s stats included. Ignoring for this conversion." % key)
 
         self.compute_records()
         self.compute_transitions()
@@ -282,6 +290,11 @@ class Statistics:
                     print("Trying to load stats in old format and convert...")
                     self.set_stats_old(data)
                     print("Successfully loaded stats in old format from '%s'." % file_path)
+
+                    # Save copy of old stats
+                    shutil.copyfile(file_path, in_path + "stats_old.pckl")
+
+                    # Save new stats
                     self.save(in_path)
                     print("Converted and saved in new format.")
                 except Exception as e:
@@ -503,10 +516,10 @@ class Statistics:
                                         n_step_mask[extreme_loss])
                 for extr_loss_id, trans_id, loss, prediction, target, n_step_r, mask in extreme_loss_data:
                     stack = element_wise_index(stacks, extr_loss_id)
-                    total_time = time.time() - self.total_timer
+                    num_trans = self.get_current_transition()
                     stack2gif(stack, env, memory.stack_size, memory.state_shapes, title="Trans ID = %d" % trans_id,
                               x_label="Loss = %f" % loss,
-                              out_path=out_path + "%06d_%d" % (total_time, trans_id))
+                              out_path=out_path + "%09d_%d" % (num_trans, trans_id))  # TODO: conflicts possible
                     self.logger.log_extreme_loss(self.get_num_cycles(), loss, moving_avg_loss,
                                                  prediction, target, n_step_r, mask,
                                                  memory.get_trans_text(trans_id, env) + "\n", env.actions)

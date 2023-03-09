@@ -15,9 +15,10 @@ The idea originated from the [Angry Birds AI Competition](http://aibirds.org/).
 	* Dueling Networks
 	* Prioritized Experience Replay
 	* Double Q-Learning
-	* Sequential Learning (for LSTMs and other RNNs)
-	* Distributed RL
+	* Frame-stacking
 	* n-step Expected Sarsa
+	* Distributed RL
+	* (Sequential Learning (for LSTMs and other RNNs))
 	* Monte Carlo Return Targets
 * Environments:
     * Angry Birds, with level generator

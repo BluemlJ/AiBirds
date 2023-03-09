@@ -3,18 +3,25 @@ from sty import Style, RgbFg, fg, ef, rs
 
 """Colors and formatting for console text"""
 
+fg.orange = Style(RgbFg(255, 130, 50))
+fg.red = Style(RgbFg(255, 30, 30))
+fg.green = Style(RgbFg(90, 255, 30))
+
 
 def red(text):
-    return "\033[91m" + text + "\033[0m"
+    return fg.red + text + fg.rs
 
 
 def orange(text):
-    fg.orange = Style(RgbFg(255, 150, 50))
     return fg.orange + text + fg.rs
 
 
 def yellow(text):
     return "\033[93m" + text + "\033[0m"
+
+
+def green(text):
+    return fg.green + text + fg.rs
 
 
 def bold(text):
