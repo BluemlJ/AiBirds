@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-16"?>
+<Level width ="2">
+<Camera x="0" y="2" minWidth="20" maxWidth="30">
+<Score highScore ="52890">
+<Birds>
+<Bird type="BirdBlue"/>
+<Bird type="BirdRed"/>
+<Bird type="BirdBlue"/>
+<Bird type="BirdRed"/>
+<Bird type="BirdBlue"/>
+<Bird type="BirdRed"/>
+</Birds>
+<Slingshot x="-8" y="-2.5">
+<GameObjects>
+<Block type="RectTiny" material="ice" x="2.69" y="-2.7902" rotation="90" />
+<Block type="RectTiny" material="ice" x="3.0" y="-2.7902" rotation="90" />
+<Block type="RectTiny" material="ice" x="3.31" y="-2.7902" rotation="90" />
+<Block type="SquareHole" material="ice" x="3.0" y="-2.1552" rotation="0" />
+<Block type="RectBig" material="ice" x="2.685" y="-0.7052" rotation="90" />
+<Block type="RectBig" material="ice" x="3.315" y="-0.7052" rotation="90" />
+<Block type="RectFat" material="ice" x="3.0" y="0.5398" rotation="0" />
+<Pig type="BasicSmall" material="" x="3.0" y="0.9798" rotation="0" />
+<Pig type="BasicSmall" material="" x="-1.5704" y="-3.5" rotation="0" />
+<Pig type="BasicSmall" material="" x="0.4891" y="-3.5" rotation="0" />
+<Pig type="BasicSmall" material="" x="8.5886" y="-3.5" rotation="0" />
+<Pig type="BasicSmall" material="" x="-2.4505" y="-3.5" rotation="0" />
+<Platform type="Platform" material="" x="3.0" y="-3.3152" />
+<Platform type="Platform" material="" x="3.0" y="-3.9352" />
+<Platform type="Platform" material="" x="3.0" y="-4.5552" />
+<Platform type="Platform" material="" x="3.115" y="-3.3152" />
+<Platform type="Platform" material="" x="2.885" y="-3.3152" />
+<Platform type="Platform" material="" x="3.115" y="-3.9352" />
+<Platform type="Platform" material="" x="2.885" y="-3.9352" />
+<Platform type="Platform" material="" x="3.115" y="-4.5552" />
+<Platform type="Platform" material="" x="2.885" y="-4.5552" />
+</GameObjects>
+</Level>

@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-16"?>
+<Level width ="2">
+<Camera x="0" y="2" minWidth="20" maxWidth="30">
+<Score highScore ="85440">
+<Birds>
+<Bird type="BirdBlack"/>
+<Bird type="BirdRed"/>
+<Bird type="BirdBlack"/>
+<Bird type="BirdWhite"/>
+<Bird type="BirdRed"/>
+<Bird type="BirdBlack"/>
+</Birds>
+<Slingshot x="-8" y="-2.5">
+<GameObjects>
+<Block type="RectSmall" material="stone" x="3.0" y="-3.362" rotation="0" />
+<Block type="RectSmall" material="ice" x="3.0" y="-3.142" rotation="0" />
+<Block type="SquareHole" material="stone" x="3.0" y="-2.612" rotation="0" />
+<Block type="SquareTiny" material="stone" x="2.685" y="-2.082" rotation="0" />
+<Block type="SquareTiny" material="stone" x="3.0" y="-2.082" rotation="0" />
+<Block type="SquareTiny" material="stone" x="3.315" y="-2.082" rotation="0" />
+<Block type="RectSmall" material="stone" x="3.0" y="-1.862" rotation="0" />
+<Block type="SquareHole" material="stone" x="3.0" y="-1.332" rotation="0" />
+<Block type="SquareHole" material="stone" x="3.0" y="-0.492" rotation="0" />
+<Block type="SquareTiny" material="stone" x="3.0" y="0.038" rotation="0" />
+<Pig type="BasicSmall" material="" x="3.0" y="0.373" rotation="0" />
+<Pig type="BasicSmall" material="" x="-1.7684" y="-3.5" rotation="0" />
+<Pig type="BasicSmall" material="" x="0.4863" y="-3.5" rotation="0" />
+<Pig type="BasicSmall" material="" x="4.3114" y="-3.5" rotation="0" />
+<Pig type="BasicSmall" material="" x="-2.3565" y="-3.5" rotation="0" />
+<Platform type="Platform" material="" x="3.0" y="-3.782" />
+<Platform type="Platform" material="" x="3.0" y="-4.402" />
+<Platform type="Platform" material="" x="3.0" y="-5.022" />
+<Platform type="Platform" material="" x="3.115" y="-3.782" />
+<Platform type="Platform" material="" x="2.885" y="-3.782" />
+<Platform type="Platform" material="" x="3.115" y="-4.402" />
+<Platform type="Platform" material="" x="2.885" y="-4.402" />
+<Platform type="Platform" material="" x="3.115" y="-5.022" />
+<Platform type="Platform" material="" x="2.885" y="-5.022" />
+</GameObjects>
+</Level>

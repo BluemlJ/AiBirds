@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-16"?>
+<Level width ="2">
+<Camera x="0" y="2" minWidth="20" maxWidth="30">
+<Score highScore ="39000">
+<Birds>
+<Bird type="BirdRed"/>
+<Bird type="BirdBlue"/>
+<Bird type="BirdRed"/>
+</Birds>
+<Slingshot x="-8" y="-2.5">
+<GameObjects>
+<Block type="RectBig" material="ice" x="3.0" y="-3.1146" rotation="0" />
+<Block type="SquareSmall" material="stone" x="2.69" y="-2.7896" rotation="0" />
+<Block type="SquareSmall" material="ice" x="3.31" y="-2.7896" rotation="0" />
+<Block type="SquareHole" material="ice" x="3.0" y="-2.1546" rotation="0" />
+<Block type="SquareHole" material="stone" x="3.0" y="-1.3146" rotation="0" />
+<Block type="RectTiny" material="ice" x="2.685" y="-0.6796" rotation="90" />
+<Block type="RectTiny" material="ice" x="3.0" y="-0.6796" rotation="90" />
+<Block type="RectTiny" material="ice" x="3.315" y="-0.6796" rotation="90" />
+<Block type="SquareTiny" material="ice" x="3.0" y="-0.3546" rotation="0" />
+<Block type="RectSmall" material="ice" x="3.0" y="0.1804" rotation="90" />
+<Pig type="BasicSmall" material="" x="3.0" y="0.8304" rotation="0" />
+<Platform type="Platform" material="" x="3.0" y="-3.5346" />
+<Platform type="Platform" material="" x="3.0" y="-4.1546" />
+<Platform type="Platform" material="" x="3.0" y="-4.7746" />
+<Platform type="Platform" material="" x="3.62" y="-3.5346" />
+<Platform type="Platform" material="" x="2.38" y="-3.5346" />
+<Platform type="Platform" material="" x="3.62" y="-4.1546" />
+<Platform type="Platform" material="" x="2.38" y="-4.1546" />
+<Platform type="Platform" material="" x="3.62" y="-4.7746" />
+<Platform type="Platform" material="" x="2.38" y="-4.7746" />
+<Platform type="Platform" material="" x="3.72" y="-3.5346" />
+<Platform type="Platform" material="" x="2.28" y="-3.5346" />
+<Platform type="Platform" material="" x="3.72" y="-4.1546" />
+<Platform type="Platform" material="" x="2.28" y="-4.1546" />
+<Platform type="Platform" material="" x="3.72" y="-4.7746" />
+<Platform type="Platform" material="" x="2.28" y="-4.7746" />
+</GameObjects>
+</Level>
