@@ -814,7 +814,7 @@ class Agent:
         hyperparams_file.close()
 
     def setup_out_path(self, override=False):
-        out_path = "out/%s/%s" % (self.env.NAME, self.name)
+        out_path = "out/%s/%s/" % (self.env.NAME, self.name)
         if os.path.exists(out_path):
             if override:
                 remove_folder(out_path)

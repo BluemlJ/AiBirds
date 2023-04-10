@@ -1,5 +1,5 @@
 import numpy as np
-import matplotlib.pyplot as plt
+from numpy.random import RandomState  # , SeedSequence, MT19937
 import shutil
 import json
 import pickle
@@ -7,9 +7,11 @@ import ctypes  # for flashing window in taskbar under Windows
 import os
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = "2"  # let TF only print errors
 import inspect
+import stat
+
+import matplotlib.pyplot as plt
 import tensorflow as tf
 
-from numpy.random import RandomState  # , SeedSequence, MT19937
 from src.utils.text_sty import print_warning, yellow, print_info
 
 
@@ -95,8 +97,7 @@ def ask_to_override_model(path):
 
 
 def remove_folder(path):
-    # os.rmdir(path)
-    shutil.rmtree(path, ignore_errors=True)
+    shutil.rmtree(path, onerror=on_rmtree_error)
 
 
 def config2text(config: dict):

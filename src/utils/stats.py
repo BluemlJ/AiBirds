@@ -700,7 +700,7 @@ def compare_statistics(model_names, env_type, labels=None,
 def plot_everything(out_path, env_type: ParallelEnvironment, **kwargs):
     # (Re-)create output folder
     if os.path.exists(out_path):
-        shutil.rmtree(out_path)
+        remove_folder(out_path)
     os.mkdir(out_path)
 
     # Episode stats

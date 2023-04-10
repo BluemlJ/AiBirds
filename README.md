@@ -35,8 +35,9 @@ The idea originated from the [Angry Birds AI Competition](http://aibirds.org/).
     * and much more
     
 ### Soon to come
-* frame stacking
+* Frame stacking
 * Angry Birds environment parallelization
+* Handling for (practically) infinite episodes
 
 
 ## Installation

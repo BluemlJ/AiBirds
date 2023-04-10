@@ -1,7 +1,7 @@
 import numpy as np
 from src.mem.trans_buf import TransitionsBuffer
 from src.mem.seq_mngr import SequenceManager
-from src.utils.text_sty import print_error
+from src.utils.text_sty import print_warning
 
 
 class ReplayMemory:
@@ -224,8 +224,8 @@ def choice_by_priority(num_instances, priorities, alpha):
 
     total_prio = np.sum(adjusted_priorities)
     if total_prio == 0:  # Catch
-        print_error("Error: All given priorities are zero! Since this is practically impossible, "
-                    "something might be wrong.\nThis is no critical error, hence, training continues.")
+        print_warning("Warning: All given priorities are zero! Since this is practically impossible, "
+                      "something might be wrong.\nThis is no critical error, hence, training continues.")
         return [], []
 
     # Convert priorities into probabilities
