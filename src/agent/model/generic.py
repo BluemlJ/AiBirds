@@ -2,8 +2,25 @@ from tensorflow.keras.layers import ReLU, Convolution2D, BatchNormalization, Fla
     MaxPool2D, Concatenate, LSTM, TimeDistributed, Layer, Input
 from tensorflow.keras.initializers import GlorotNormal, VarianceScaling
 from src.agent.model.stem import StemNetwork
-import tensorflow as tf
-import numpy as np
+
+
+class StemNetworkDense(StemNetwork):
+    def __init__(self, latent_dim):
+        super().__init__(sequential=False)
+        self.latent_dim = latent_dim
+
+    def get_functional_graph(self, input_shapes, batch_size=None):
+        input_shape_2d = input_shapes[0]
+
+        input_2d = Input(shape=input_shape_2d, name="input")
+        flat = Flatten(name="flat")(input_2d)
+        dense = Dense(self.latent_dim, activation="relu", name="dense")(flat)
+        latent = Dense(self.latent_dim, activation="relu", name="latent")(dense)
+
+        return [input_2d], latent
+
+    def get_config(self):
+        return {"latent_dim": self.latent_dim}
 
 
 class TimeConvHead(Layer):
@@ -109,6 +126,39 @@ class StemNetwork2DSmallNoDense(StemNetwork):
 
     def get_config(self):
         return {"latent_dim": self.latent_dim}
+
+
+class StemNetwork2D(StemNetwork):
+    def __init__(self, latent_dim, activation="relu"):
+        super().__init__(sequential=False)
+        self.latent_dim = latent_dim
+        self.activation = activation
+
+    def get_functional_graph(self, input_shapes, batch_size=None):
+        input_shape_2d = input_shapes[0]
+
+        input = Input(shape=input_shape_2d, name="input")
+
+        conv1 = Convolution2D(32, (4, 4), strides=1, padding='same', activation="relu",
+                              kernel_initializer=GlorotNormal,
+                              use_bias=False, name="conv_1")(input)
+        pool1 = MaxPool2D((2, 2))(conv1)
+        conv2 = Convolution2D(128, (2, 2), strides=1, padding='same', activation="relu",
+                              kernel_initializer=GlorotNormal,
+                              use_bias=False, name="conv_2")(pool1)
+        pool2 = MaxPool2D((2, 2))(conv2)
+        conv3 = Convolution2D(self.latent_dim, (5, 2), strides=1, padding='same', activation="relu",
+                              kernel_initializer=GlorotNormal,
+                              use_bias=False, name="conv_3")(pool2)
+        flat = Flatten(name='flat')(conv3)
+
+        latent = Dense(self.latent_dim, activation=self.activation, name="latent")(flat)
+
+        return [input], latent
+
+    def get_config(self):
+        return {"latent_dim": self.latent_dim,
+                "activation": self.activation}
 
 
 class StemNetwork2DLarge(StemNetwork):

@@ -1,4 +1,4 @@
-import gym
+import gymnasium as gym
 import cv2
 import numpy as np
 from concurrent import futures

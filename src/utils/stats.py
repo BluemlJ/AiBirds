@@ -5,8 +5,8 @@ import shutil
 import time
 import imageio
 
-from src.utils.utils import finalize_plot, user_agrees_to, sec2hhmmss, data2pickle, pickle2data, element_wise_index, \
-    get_state_from_stack
+from src.utils.utils import finalize_plot, sec2hhmmss, data2pickle, pickle2data, element_wise_index, \
+    get_state_from_stack, remove_folder
 from src.envs.env import ParallelEnvironment
 from src.utils.logger import Logger
 from src.mem.mem import ReplayMemory
@@ -14,7 +14,7 @@ from src.utils.text_sty import orange, red, bold, print_info, num2text
 from skimage.measure import block_reduce
 
 # For comparison plots
-PLOT_STEP_NO = 10000
+PLOT_RESOLUTION = 10000
 DEFAULT_COLORS = plt.rcParams['axes.prop_cycle'].by_key()['color']
 
 
@@ -39,7 +39,7 @@ class Statistics:
     # Other constants
     WINDOW_SIZE_EPISODES = 500
     WINDOW_SIZE_CYCLES = 10
-    EXTREME_LOSS_FACTOR = 500
+    EXTREME_LOSS_FACTOR = 10000
 
     def __init__(self, env_type: ParallelEnvironment = None, env: ParallelEnvironment = None, log_path=None):
         assert env_type is not None or env is not None
@@ -350,7 +350,7 @@ class Statistics:
         ma_text = num2text(ma_episode_size)
 
         ep = num2text(self.get_num_episodes())
-        trans = num2text(par_step * num_par_envs)
+        trans = num2text(self.init_trans_no + par_step * num_par_envs)
         cyc = num2text(self.get_num_cycles())
 
         stats_text = "\n" + bold("Parallel step %d/%d" % (par_step, total_par_steps)) + \
@@ -392,6 +392,8 @@ class Statistics:
         self.computation_timer = time.time()
 
     def plot_stats(self, memory: ReplayMemory, out_path):
+        if not os.path.exists(out_path):
+            os.makedirs(out_path)
         self.plot_scores(out_path)
         self.plot_returns(out_path)
         if self.env_type.TIME_RELEVANT:
@@ -405,17 +407,14 @@ class Statistics:
         self.plot_score_dist(out_path)
 
     def plot_real_time(self, y, y_records, title, y_label, out_path, show):
-        transitions = self.get_episode_transitions()
-        add_charts(x_lsts=[transitions],
-                   y_lsts=[y],
+        add_charts(y_lsts=[y],
                    labels=["Moving average"],
                    mov_avg=True,
-                   interp=True,
                    plot_confidence=True,
-                   confidence_labels=["90% confidence"])
-        plt.plot(transitions, y_records, label="Records", color=DEFAULT_COLORS[1])
+                   confidence_labels=["p5|p95 quantile"])
+        plt.plot(y_records, label="Records", color=DEFAULT_COLORS[1])
         finalize_plot(title=title,
-                      x_label="Transition",
+                      x_label="Episode",
                       y_label=y_label,
                       out_path=out_path,
                       legend=True,
@@ -551,26 +550,20 @@ def get_moving_avg_lst(values, n):
     return mov_avg
 
 
-def get_bound(x, y, n, bound="upper"):
-    if len(y) < n:
+def get_moving_quantile(x, y, window_size, quantile):
+    if len(y) < window_size:
         return np.array([]), np.array([])
-    if n == 0:
+    if window_size == 0:
         return x, y
 
     # Ensure lengths of x and y are divisible by n
-    overhang = len(y) % n
+    overhang = len(y) % window_size
     if overhang:
         y = y[:-overhang]
         x = x[:-overhang]
 
-    quantile = 0.05
-
-    if bound == "upper":
-        y = block_reduce(y, (n,), np.quantile, func_kwargs={"q": 1 - quantile})
-    else:
-        y = block_reduce(y, (n,), np.quantile, func_kwargs={"q": quantile})
-
-    x = block_reduce(x, (n,), np.average)
+    y = block_reduce(y, (window_size,), np.quantile, func_kwargs={"q": 1 - quantile})
+    x = block_reduce(x, (window_size,), np.average)
     return x, y
 
 
@@ -595,7 +588,7 @@ def add_charts(y_lsts, x_lsts=None, colors=None, labels=None, mov_avg=False,
     assert not plot_confidence or mov_avg
 
     if interp:
-        max_len = PLOT_STEP_NO
+        max_len = PLOT_RESOLUTION
         max_x = 0
         for x in x_lsts:
             if len(x) > 0:
@@ -638,8 +631,8 @@ def add_charts(y_lsts, x_lsts=None, colors=None, labels=None, mov_avg=False,
 
             if plot_confidence:
                 var_label = confidence_labels[i] if confidence_labels is not None else None
-                _, y_up = get_bound(x, y, ma_ws, "upper")
-                x_bounds, y_lo = get_bound(x, y, ma_ws, "lower")
+                _, y_up = get_moving_quantile(x, y, ma_ws, quantile=0.95)
+                x_bounds, y_lo = get_moving_quantile(x, y, ma_ws, quantile=0.05)
                 plt.fill_between(x_bounds, y_lo, y_up, color=color, alpha=0.4, label=var_label)
         else:
             if x is not None:

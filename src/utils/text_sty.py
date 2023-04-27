@@ -36,6 +36,10 @@ def ul(text):  # underline
     return "\033[4m" + text + "\033[0m"
 
 
+def print_success(text):
+    print(green(text))
+
+
 def print_info(text):
     print(yellow(text))
 

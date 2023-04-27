@@ -1,33 +1,47 @@
 import time
 import os
+import numpy as np
+import signal
+from typing import Type
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = "2"  # let TF only print errors
 import tensorflow as tf
-import numpy as np
-from typing import Type
 
-from src.utils import Statistics, ParamScheduler, copy_object_with_config, plot_highscores, config2text, \
-    ask_to_override_model, config2json, json2config, remove_folder, log_model_graph, random_choice_along_last_axis
 from src.mem.mem import ReplayMemory
 from src.envs.env import ParallelEnvironment
-from src.agent.model import *
+from src.agent.model import QNetwork, StemNetwork, DoubleQNetwork, get_class_from_name
+from src.utils.params import ParamScheduler
 from src.utils.stack import StateStacker
-from src.utils.text_sty import print_warning, green, red
+from src.utils.stats import Statistics, remove_folder
+from src.utils.text_sty import print_warning, green, red, print_info, print_success
+from src.utils.timer import Timer
+from src.utils.utils import copy_object_with_config, plot_highscores, config2text, \
+    ask_to_override_model, config2json, json2config, log_model_graph, random_choice_along_last_axis, \
+    get_function_signature_list, serialize_function_parameters
+from src.utils.ram import print_total_ram_usage, print_pympler_ram_usage, print_leaking_objects_count, \
+    print_memory_block_summary, print_heap
 
 # Miscellaneous
-PLOT_SAVE_STATS_PERIOD = 1000  # number of transitions between each learning statistics plot
+PLOT_SAVE_STATS_PERIOD = 5000  # number of transitions between each learning statistics plot
 PRINT_STATS_PERIOD = 100
-CHECKPOINT_SAVE_PERIOD = 5000
-TEST_PERIOD = 5000
+CHECKPOINT_SAVE_PERIOD = 10000
+TEST_PERIOD = 10000
 
 
 class Agent:
     """Deep Q-Network (DQN) agent for playing Tetris, Snake or other games"""
 
-    def __init__(self, name, env: ParallelEnvironment, stem_network: StemNetwork,
+    def __init__(self,
+                 name: str,
+                 env: ParallelEnvironment,
+                 stem_network: StemNetwork,
                  q_network: QNetwork = DoubleQNetwork(),
-                 replay_batch_size=512, stack_size=1, optimizer=tf.optimizers.Adam(),
-                 use_pretrained=False, override=False, seed=None, use_double=None):
+                 replay_batch_size=512,
+                 stack_size=1,
+                 optimizer=tf.keras.optimizers.legacy.Adam(),  # TODO: remove legacy
+                 use_pretrained=False,
+                 seed=None,
+                 **kwargs):  # keep kwargs for backwards compatibility
         """Constructor
         :param env: The (instantiated) environment in which the agent acts
         :param stem_network: The main stem model
@@ -43,6 +57,10 @@ class Agent:
         self.seed = seed
         self.policy = None
 
+        self.model_dir = get_model_dir(env, name)
+        if not os.path.exists(self.model_dir):
+            os.makedirs(self.model_dir, exist_ok=True)
+
         # Environment
         self.env = env
         self.num_par_envs = self.env.num_par_inst
@@ -54,10 +72,6 @@ class Agent:
         self.stack_size = stack_size
         self.stacker = StateStacker(self.state_shapes, self.state_dtypes, self.stack_size, self.num_par_envs)
         self.stack_shapes = self.stacker.get_stack_shapes()
-
-        if name in ["debug", "tmp"]:
-            override = True
-        self.out_path = self.setup_out_path(override)
 
         # For training
         self.replay_batch_size = replay_batch_size
@@ -75,12 +89,12 @@ class Agent:
         self.optimizer = optimizer
         self.online_learner = self.init_online_learner()
         self.q_net_layer_id = np.where([isinstance(layer, QNetwork) for layer in self.online_learner.layers])[0][0]
-        log_model_graph(self.online_learner, self.stack_shapes)
+        # log_model_graph(self.online_learner, self.stack_shapes)
 
         if use_pretrained:
             self.load_pretrained_model()
 
-        # Double Q-Learning and Distributed RL
+        # Double Q-Learning and Distributed RL: by default identical to online_learner
         self.target_learner = self.online_learner
         self.actor = self.online_learner
 
@@ -90,9 +104,12 @@ class Agent:
 
         # Memory and statistics
         self.memory = None
-        self.stats = Statistics(env=self.env, log_path=self.out_path)
+        self.stats = Statistics(env=self.env, log_path=self.model_dir)
 
         self.save_config()
+
+        self.stop = False
+
         print('DQN agent initialized.')
 
     def init_online_learner(self) -> tf.keras.Model:
@@ -146,18 +163,24 @@ class Agent:
         pass  # TODO
 
     def practice(self, num_parallel_steps,
-                 replay_period, gamma,
+                 replay_period,
+                 gamma,
                  learning_rate: ParamScheduler = ParamScheduler(0.0001),
-                 target_sync_period=None, actor_sync_period=None,
-                 replay_size_multiplier=4, replay_epochs=1,
+                 target_sync_period=None,
+                 actor_sync_period=None,
+                 replay_size_multiplier=4,
+                 replay_epochs=1,
                  epsilon: ParamScheduler = ParamScheduler(0),
-                 use_mc_return=False, action_masking=False, alpha=0.7,
+                 use_mc_return=False,
+                 action_masking=False,
+                 alpha=0.7,
                  max_replay_size=None,
                  policy="greedy",
                  min_hist_len=0,
                  memory_size=1000000,
                  n_step=1,
-                 sequence_shift=None, eta=0.9,
+                 sequence_shift=None,
+                 eta=0.9,
                  verbose=False):
         """The agent's main training routine.
 
@@ -175,6 +198,7 @@ class Agent:
         :param gamma: Discount factor
         :param epsilon: Epsilon class, probability for random shot (epsilon greedy policy)
         :param use_mc_return: If True, uses Monte Carlo return targets instead of n-step TD targets
+        :param action_masking:
         :param alpha: For Prioritized Experience Replay: the larger alpha the stronger prioritization
         :param max_replay_size:
         :param policy:
@@ -185,6 +209,15 @@ class Agent:
         :param eta:
         :param verbose:
         """
+
+        # TODO: handle existing agent
+
+        training_parameters_dict = serialize_function_parameters(fn=self.practice, local_scope=locals())
+        self.save_training_parameters(training_parameters_dict)
+
+        # Setup SIGINT handler
+        signal.signal(signal.SIGINT, self.end_practice)
+
         self.check_replay_size(replay_size_multiplier, replay_period, max_replay_size)
 
         self.set_policy(policy)
@@ -195,8 +228,11 @@ class Agent:
         self.use_mc_return = use_mc_return
         self.action_masking = action_masking
 
+        # Setup target learner (target learner == online learner if no sync period provided)
         if target_sync_period is not None:
             self.target_learner = self.copy_online_learner()
+
+        # Setup actor (actor == online learner if no sync period provided)
         if actor_sync_period is not None:
             self.actor = self.copy_online_learner()
 
@@ -212,7 +248,7 @@ class Agent:
                                    sequence_shift=sequence_shift,
                                    eta=eta)
 
-        # Save all hyperparameters in txt file
+        # Save all hyperparameters
         self.write_hyperparams_file(num_parallel_steps, replay_period, replay_size_multiplier,
                                     target_sync_period, actor_sync_period, alpha, gamma, min_hist_len)
 
@@ -227,29 +263,35 @@ class Agent:
         self.stats.start_timer()
 
         for i in range(1, num_parallel_steps + 1):
-            done_transitions = (i - 1) * self.num_par_envs
+            if self.stop:
+                break
 
+            # Compute one parallel step
+            # Computation time (percentage of total) behind each step component
+            done_transitions = self.stats.init_trans_no + (i - 1) * self.num_par_envs
+
+            # State preparation (2 %)
             states = self.env.get_states()
             self.stacker.add_states(states)
             hidden_states = self.get_hidden_states_of(self.actor)
 
-            # Predict the next action to take
+            # Predict the next action to take (30 %)
             actions, _ = self.plan_epsilon_greedy(self.stacker.get_stacks(),
                                                   self.epsilon.get_value(done_transitions))
 
-            # Perform actions, observe new environment state, level score and application state
+            # Perform actions, observe new environment state, level score and application state (13 %)
             rewards, scores, terminals, times, wins, game_overs = self.env.step(actions)
             returns += rewards
 
-            # Save observations
+            # Save observations (1 %)
             new_transitions += self.memory.memorize_observations(states, hidden_states, actions,
                                                                  scores, rewards, terminals, gamma)
 
-            # Reset state stacker for envs with true terminals
+            # Reset state stacker for envs with true terminals (0 %)
             terminated_env_ids = np.where(terminals)[0]
             self.stacker.reset_stacks(terminated_env_ids)
 
-            # Handle finished envs
+            # Handle finished envs (0 %)
             if np.any(game_overs):
                 fin_env_ids = np.where(game_overs)[0]
 
@@ -265,51 +307,63 @@ class Agent:
                 # Reset actor's LSTM states (if any) to zero
                 self.reset_cell_states_for(self.actor, fin_env_ids)
 
-            # Every X episodes, plot informative graphs
+            # Every X episodes, plot informative graphs (23 %)
             if i % PLOT_SAVE_STATS_PERIOD == 0:
-                self.stats.plot_stats(self.memory, self.out_path)
-                self.stats.save(self.out_path)
+                self.stats.plot_stats(self.memory, self.model_dir + "plots/")
+                self.stats.save(self.model_dir)
 
-            # If environment has test levels, test on it
+            # If environment has test levels, test on it (0 %)
             if i % TEST_PERIOD == 0 and self.env.has_test_levels():
                 self.test_on_levels()
 
-            # Update the network weights every train_period levels to fit experience
+            # Training / replay (29 %)
             if i % replay_period == 0:
                 self.reset_noise()  # for Noisy Nets (if activated)
                 replay_size = replay_size_multiplier * new_transitions
                 if self.memory.get_num_transitions() >= min_hist_len and replay_size > 0:
                     if max_replay_size is not None and replay_size > max_replay_size:
                         replay_size = max_replay_size
-                    self.update_lr(current_transition=i * self.num_par_envs)
+                    self.update_lr(current_transition=done_transitions)
                     learned_trans = self.learn(replay_size, gamma, epochs=replay_epochs, alpha=alpha, verbose=verbose)
                     new_transitions = max(0, new_transitions - learned_trans)
 
-            # Save model checkpoint
+            # Save model checkpoint (0 %)
             if i % CHECKPOINT_SAVE_PERIOD == 0:
-                curr_trans = self.stats.init_trans_no + i * self.num_par_envs
-                self.save(overwrite=True, checkpoint=True, checkpoint_no=curr_trans)
+                self.save_weights(overwrite=True, checkpoint_no=done_transitions)
 
-            # Cut off old experience to reduce buffer load
+            # Cut off old experience to reduce buffer load (0 %)
             if self.memory.get_num_transitions() > 0.95 * self.memory.get_size():
                 self.memory.delete_first(n=int(0.2 * self.memory.get_size()))
 
-            # Synchronize target and online network every sync_period levels (Double Q-Learning)
+            # Synchronize target and online network every sync_period levels (Double Q-Learning) (0 %)
             if target_sync_period is not None and i % target_sync_period == 0:
                 self.target_learner.set_weights(self.online_learner.get_weights())
 
-            # Synchronize learner and actor (Distributed RL)
+            # Synchronize learner and actor (Distributed RL) (0 %)
             if actor_sync_period is not None and i % actor_sync_period == 0:
                 self.actor.set_weights(self.online_learner.get_weights())
 
+            # Print a summary of current learning statistics (0 %)
             if i % PRINT_STATS_PERIOD == 0:
                 self.stats.print_stats(i, num_parallel_steps, PRINT_STATS_PERIOD, self.num_par_envs,
                                        self.epsilon.get_value(done_transitions), self.num_par_envs)
 
-        self.save()
-        self.stats.logger.close()
+            # if i % 10000 == 0:
+            #     print_total_ram_usage()
+            #     # print_pympler_ram_usage()
+            #     # print_leaking_objects_count()
+            #     print_memory_block_summary()
+            #     # print_heap()
 
-        print("Practicing finished successfully!")
+        print("Concluding practice...")
+        self.save_weights(overwrite=True)
+        self.stats.save(self.model_dir)
+        self.stats.logger.close()
+        print_success("Practicing finished successfully!")
+
+    def end_practice(self, sig, frame):
+        print_info("Stopping agent practice...")
+        self.stop = True
 
     def learn(self, replay_size, gamma, epochs=1, alpha=0.7, verbose=False):
         """Updates the online network's weights. This is the actual learning procedure of the agent.
@@ -393,7 +447,7 @@ class Agent:
 
         self.stats.denote_learning_stats(loss, self.optimizer.learning_rate.numpy())
         self.stats.log_extreme_losses(individual_losses, trans_ids, states, predictions, targets, n_step_rewards,
-                                      step_mask, self.env, self.memory, self.out_path)
+                                      step_mask, self.env, self.memory, self.model_dir)
 
         return len(trans_ids)
 
@@ -456,8 +510,7 @@ class Agent:
                                                         hidden_states=first_hidden_states,
                                                         seq_mask=mask)
 
-        self.stats.denote_learning_stats(loss, individual_losses, self.optimizer.learning_rate.numpy(),
-                                         trans_ids, predictions, targets, self.env, self.memory)
+        self.stats.denote_learning_stats(loss, self.optimizer.learning_rate.numpy())
 
         return np.prod(trans_ids.shape)
 
@@ -566,16 +619,29 @@ class Agent:
             return self.plan(states)
 
     def plan(self, states):
+        # t = time.time()
+
         if self.sequential:
             states = [np.expand_dims(state_comp, axis=1) for state_comp in states]
 
         batch_size = self.num_par_envs if self.sequential else self.replay_batch_size
 
-        q_vals = self.actor.predict(self.env.preprocess(states),
+        # timer.add_time("Planning preparation", time.time() - t)
+        # t = time.time()
+
+        states_preprocessed = self.env.preprocess(states)
+
+        # timer.add_time("State preprocessing", time.time() - t)
+        # t = time.time()
+
+        q_vals = self.actor.predict(states_preprocessed,
                                     batch_size=batch_size,
                                     verbose=0)
         if self.sequential:
             q_vals = np.squeeze(q_vals, axis=1)
+
+        # timer.add_time("Actor prediction", time.time() - t)
+        # t = time.time()
 
         # Pick action according to policy
         if self.policy == "greedy":
@@ -584,9 +650,14 @@ class Agent:
             probs = np.exp(q_vals) / np.sum(np.exp(q_vals), axis=1, keepdims=True)
             actions = random_choice_along_last_axis(probs)
 
-        pred_rets = np.max(q_vals, axis=1)
+        # timer.add_time("Action pick", time.time() - t)
+        # t = time.time()
 
-        return actions, pred_rets
+        predicted_returns = np.max(q_vals, axis=1)
+
+        # timer.add_time("Return computation", time.time() - t)
+
+        return actions, predicted_returns
 
     def update_lr(self, current_transition):
         new_lr = self.learning_rate.get_value(current_transition)
@@ -624,10 +695,7 @@ class Agent:
 
     def play_parallel(self, epsilon=0, render_environment=True, verbose=False):
         """Plays one or more envs in parallel."""
-        assert self.num_par_envs == 1 or not verbose, \
-            NotImplementedError("Verbose mode not implemented for parallel playing.")
-
-        if verbose:
+        if verbose and self.num_par_envs == 1:
             print(" Pred. return |       Action |       Reward ")
             print("--------------------------------------------")
 
@@ -639,7 +707,7 @@ class Agent:
             self.stacker.add_states(states)
 
             # Plan action
-            actions, pred_rets = self.plan_epsilon_greedy(self.stacker.get_stacks(), epsilon, True)
+            actions, pred_rets = self.plan_epsilon_greedy(self.stacker.get_stacks(), epsilon, compute_return=True)
 
             # Env step
             reward, score, terminals, env_time, _, game_overs = self.env.step(actions)
@@ -647,19 +715,24 @@ class Agent:
                 self.env.render()
 
             if verbose:
-                ret += reward[0]
-                rew_text = "{:>12.2f} ".format(reward[0])
-                if reward[0] > 0:
-                    rew_text = green(rew_text)
-                elif reward[0] < 0:
-                    rew_text = red(rew_text)
-                print("{:>13.2f}".format(pred_rets[0]) + " | " +
-                      "{:>12s}".format(self.env.actions[actions[0]]) + " | " + rew_text)
+                if self.num_par_envs == 1:
+                    ret += reward[0]
+                    rew_text = "{:>12.2f} ".format(reward[0])
+                    if reward[0] > 0:
+                        rew_text = green(rew_text)
+                    elif reward[0] < 0:
+                        rew_text = red(rew_text)
+                    print("{:>13.2f}".format(pred_rets[0]) + " | " +
+                          "{:>12s}".format(self.env.actions[actions[0]]) + " | " + rew_text)
 
-            if verbose and game_overs[0]:
-                print("--------------------------------------------")
-                print("Level finished with return %.2f, score %d, and time %d.\n" % (ret, score, env_time))
-                ret = 0
+                    if game_overs[0]:
+                        print("--------------------------------------------")
+                        print("Level finished with return %.2f, score %d, and time %d.\n" % (ret, score, env_time))
+                        ret = 0
+
+                else:
+                    if step % 10 == 0:
+                        print(f"Parallel step {step}.")
 
             # Handle finished envs
             self.env.reset_finished()
@@ -698,7 +771,7 @@ class Agent:
             test_scores[level] = score
 
         _, highscores_human = test_env.get_highscores()
-        plot_highscores(test_scores, highscores_human, self.out_path)
+        plot_highscores(test_scores, highscores_human, self.model_dir)
 
     def get_config(self):
         """Keep compatible with load_model()!"""
@@ -719,12 +792,19 @@ class Agent:
 
     def save_config(self):
         config = self.get_config()
-        config2json(config, out_path=self.out_path + "config.json")
+        config2json(config, out_path=self.model_dir + "config.json")
 
-    def save(self, out_path=None, overwrite=False, checkpoint=False, checkpoint_no=None):
+    def save_training_parameters(self, parameters_dict: dict):
+        out_path = self.get_training_config_path()
+        config2json(parameters_dict, out_path=out_path)
+
+    def get_training_config_path(self):
+        return self.model_dir + "training_config.json"
+
+    def save_weights(self, out_path=None, overwrite=False, checkpoint_no=None):
         """Saves the current model weights and statistics to a specified export path."""
         if out_path is None:
-            model_path = self.out_path + ("checkpoints/" if checkpoint else "trained_model")
+            model_path = self.model_dir + "checkpoints/"
         else:
             model_path = out_path
 
@@ -733,39 +813,7 @@ class Agent:
 
         self.online_learner.save_weights(model_path, overwrite=overwrite)
 
-        print("Saved model.")
-
-    def restore(self, model_name, checkpoint_no=None):
-        """Restores model weights and statistics."""
-        in_path = "out/%s/%s/" % (self.env.NAME, model_name)
-
-        if checkpoint_no is not None:
-            model_path = in_path + "checkpoints/%s" % str(checkpoint_no)
-            self.restore_from(model_path, in_path)
-        else:
-            self.restore_latest(model_name)
-
-    def restore_latest(self, model_name):
-        """Restores the most recently saved model (can be a checkpoint or a final model)."""
-        in_path = "out/%s/%s/" % (self.env.NAME, model_name)
-        model_path = in_path + "trained_model"
-        chkpt_dir_path = in_path + "checkpoints/"
-        if os.path.exists(model_path + ".index"):
-            # Restore final model
-            self.restore_from(model_path, in_path)
-        else:
-            # Restore latest checkpoint
-            chkpt_path = tf.train.latest_checkpoint(chkpt_dir_path)
-            if chkpt_path is None:
-                raise FileNotFoundError("No model found at '%s'." % in_path)
-            self.restore_from(chkpt_path, in_path)
-
-    def restore_from(self, model_path, stats_path):
-        print("Restoring model from '%s'." % model_path)
-        self.online_learner.load_weights(model_path)
-        self.target_learner = self.online_learner
-        self.actor = self.online_learner
-        self.stats.load(in_path=stats_path)
+        print("Saved model weights.")
 
     def save_experience(self, experience_path=None, overwrite=False, compress=False):
         pass
@@ -778,7 +826,7 @@ class Agent:
 
     def write_hyperparams_file(self, num_parallel_steps, replay_period, replay_size_multiplier, target_sync_period,
                                actor_sync_period, alpha, gamma, min_hist_len):
-        hyperparams_file = open(self.out_path + "hyperparams.txt", "w+")
+        hyperparams_file = open(self.model_dir + "hyperparams.txt", "w+")
         text = "num_parallel_steps: %d" % num_parallel_steps + \
                "\nnum_parallel_envs: %d" % self.num_par_envs + \
                "\npolicy: %s" % self.policy + \
@@ -813,21 +861,92 @@ class Agent:
         self.online_learner.summary(print_fn=lambda x: hyperparams_file.write(x + '\n'))
         hyperparams_file.close()
 
-    def setup_out_path(self, override=False):
-        out_path = "out/%s/%s/" % (self.env.NAME, self.name)
-        if os.path.exists(out_path):
-            if override:
-                remove_folder(out_path)
-            else:
-                ask_to_override_model(out_path)
-        os.makedirs(out_path, exist_ok=True)
-        return out_path
-
     def check_replay_size(self, replay_size_multiplier, replay_period, max_replay_size):
         exp_replay_size = replay_size_multiplier * replay_period * self.num_par_envs
         if max_replay_size is not None and exp_replay_size > max_replay_size:
             print_warning("Warning: Expected replay size %d is larger than given max replay size %d." %
                           (exp_replay_size, max_replay_size))
+
+
+def continue_practice(model_name: str,
+                      env_type: type(ParallelEnvironment),
+                      num_par_envs: int = None,
+                      checkpoint_no: int = None,
+                      **training_parameters_override):
+    # Restore agent and training parameters
+    agent = restore(model_name=model_name,
+                    env_type=env_type,
+                    num_par_envs=num_par_envs,
+                    checkpoint_no=checkpoint_no)
+    training_parameters = restore_training_parameters(model_name=model_name, env_type=env_type)
+
+    # Override training parameters
+    training_parameters["num_parallel_steps"] -= int(agent.stats.get_current_transition() // agent.num_par_envs)
+    for parameter in training_parameters_override.keys():
+        training_parameters[parameter] = training_parameters_override[parameter]
+
+    # Continue practicing
+    agent.practice(**training_parameters)
+
+
+def restore(model_name: str,
+            env_type: type(ParallelEnvironment),
+            num_par_envs: int = None,
+            checkpoint_no: int = None):
+    """Loads the most recently saved checkpoint of the specified model."""
+    model_dir = get_model_dir(env_type, model_name)
+
+    if not os.path.exists(model_dir):
+        raise ValueError(f"There is no {env_type.__name__} model named '{model_name}'.")
+
+    config_path = model_dir + "config.json"
+    if checkpoint_no is not None:
+        weights_path = model_dir + f"checkpoints/{checkpoint_no}"
+    else:
+        final_model_path = model_dir + "trained_model.index"  # TODO: deprecated: to delete
+        if os.path.exists(final_model_path):
+            weights_path = final_model_path
+        else:
+            # weights_path = tf.train.latest_checkpoint(model_dir + "checkpoints/")  # TODO
+            weights_path = model_dir + "checkpoints/"
+
+    print(f"Restoring model and statistics from '{model_dir}'.")
+
+    config = json2config(config_path)
+
+    stem_class = get_class_from_name(config["stem_model_class"])
+    stem_config = config["stem_model_config"]
+    q_class = get_class_from_name(config["q_network_class"])
+    q_config = config["q_network_config"]
+    env_config = config["env_config"]
+    agent_config = config["agent_config"]
+
+    if env_config is None:
+        env_config = dict()
+
+    if num_par_envs is not None:
+        env_config.update({"num_par_inst": num_par_envs})
+
+    stem_net = stem_class(**stem_config)
+    q_net = q_class(**q_config)
+    env = env_type(**env_config)
+
+    # Load the agent, model weights and statistics
+    agent = Agent(name=model_name, env=env, stem_network=stem_net,
+                  q_network=q_net, override=True, **agent_config)
+    agent.online_learner.load_weights(weights_path)
+    agent.stats.load(model_dir)
+
+    print("Successfully restored.")
+    return agent
+
+
+def restore_training_parameters(model_name: str, env_type: type(ParallelEnvironment)) -> dict:
+    model_path = get_model_dir(env_type, model_name)
+    config = json2config(model_path + "training_config.json")
+    config["learning_rate"] = ParamScheduler(**config["learning_rate"])
+    config["epsilon"] = ParamScheduler(**config["epsilon"])
+    return config
 
 
 def compute_sample_weights(sample_priorities, sample_probabilities, total_size, beta=0.5):
@@ -852,37 +971,21 @@ def get_n_step_return(pred_next_returns, n_step_rewards, step_mask, gamma):
     return n_step_returns
 
 
-def load_model(model_name, env_type, num_par_envs=None, checkpoint_no=None):
-    in_path = "out/" + env_type.NAME + "/" + model_name + "/config.json"
-    config = json2config(in_path)
+def play(model_name: str,
+         env_type: type(ParallelEnvironment),
+         num_par_envs: int = None,
+         checkpoint_no: int = None,
+         mode=None,
+         **kwargs):
+    # Restore agent and training parameters
+    agent = restore(model_name=model_name,
+                    env_type=env_type,
+                    num_par_envs=num_par_envs,
+                    checkpoint_no=checkpoint_no)
 
-    stem_class = eval(config["stem_model_class"])
-    stem_config = config["stem_model_config"]
-    q_class = eval(config["q_network_class"])
-    q_config = config["q_network_config"]
-    env_config = config["env_config"]
-    agent_config = config["agent_config"]
-
-    if env_config is None:
-        env_config = dict()
-
-    if num_par_envs is not None:
-        env_config.update({"num_par_inst": num_par_envs})
-
-    stem_net = stem_class(**stem_config)
-    q_net = q_class(**q_config)
-    env = env_type(**env_config)
-
-    agent = Agent(env=env, stem_network=stem_net, q_network=q_net,
-                  name="tmp", override=True, **agent_config)
-    agent.restore(model_name, checkpoint_no)
-    return agent
-
-
-def load_and_play(model_name, env_type, num_par_envs, checkpoint_no=None, mode=None, **kwargs):
-    agent = load_model(model_name, env_type, num_par_envs=num_par_envs, checkpoint_no=checkpoint_no)
     if mode is not None:
         agent.env.set_mode(mode)
+
     agent.just_play(num_par_envs, **kwargs)
 
 
@@ -909,3 +1012,7 @@ def benchmark(env_type: Type[ParallelEnvironment], stem_network: StemNetwork, q_
         agent = Agent("tmp", env, stem_network, q_network, replay_batch_size)
         agent.practice(steps_per_round, replay_period, 1)
         # TODO
+
+
+def get_model_dir(env: ParallelEnvironment, model_name: str):
+    return f"out/{env.NAME}/{model_name}/"

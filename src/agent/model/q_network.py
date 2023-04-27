@@ -1,7 +1,9 @@
-import tensorflow as tf
 from abc import ABCMeta
-from tensorflow.keras.layers import Dense, LeakyReLU, Layer, ReLU
-from tensorflow.keras.initializers import VarianceScaling, GlorotNormal
+
+import tensorflow as tf
+from keras.layers import Dense, LeakyReLU, Layer
+# from tensorflow.keras.layers import Dense, LeakyReLU, Layer
+
 from src.agent.model.noisy import NoisyDense
 
 
@@ -30,11 +32,12 @@ class QNetwork(Layer, metaclass=ABCMeta):
 
 
 class DoubleQNetwork(QNetwork):
-    def __init__(self, latent_v_dim=None, latent_a_dim=None, noise_std_init=0):
+    def __init__(self, latent_v_dim=None, latent_a_dim=None, noise_std_init=0, activation=None):
         super().__init__(name="double_Q_network")
         self.v_h_size = latent_v_dim
         self.a_h_size = latent_a_dim
         self.noise_std_init = noise_std_init
+        self.activation = activation
         self.v_h = None
         self.v = None
         self.a_h = None
@@ -46,9 +49,10 @@ class DoubleQNetwork(QNetwork):
         # State value V
         if self.v_h_size is not None:
             if self.noise_std_init == 0:
-                self.v_h = Dense(self.v_h_size, name='latent_V')
+                self.v_h = Dense(self.v_h_size, name='latent_V', activation=self.activation)
             else:
-                self.v_h = NoisyDense(self.v_h_size, std_init=self.noise_std_init, name='latent_V')
+                self.v_h = NoisyDense(self.v_h_size, std_init=self.noise_std_init,
+                                      name='latent_V', activation=self.activation)
         else:
             self.v_h = Layer()
 
@@ -60,9 +64,10 @@ class DoubleQNetwork(QNetwork):
         # Advantage A
         if self.a_h_size is not None:
             if self.noise_std_init == 0:
-                self.a_h = Dense(self.a_h_size, name='latent_A')
+                self.a_h = Dense(self.a_h_size, name='latent_A', activation=self.activation)
             else:
-                self.a_h = NoisyDense(self.a_h_size, std_init=self.noise_std_init, name='latent_A')
+                self.a_h = NoisyDense(self.a_h_size, std_init=self.noise_std_init,
+                                      name='latent_A', activation=self.activation)
         else:
             self.a_h = Layer()
 
@@ -76,7 +81,8 @@ class DoubleQNetwork(QNetwork):
     def get_config(self):
         config = {"latent_v_dim": self.v_h_size,
                   "latent_a_dim": self.a_h_size,
-                  "noise_std_init": self.noise_std_init}
+                  "noise_std_init": self.noise_std_init,
+                  "activation": self.activation}
         return config
 
     def call(self, inputs, training=False, mask=None):
@@ -87,7 +93,8 @@ class DoubleQNetwork(QNetwork):
         a = self.a(self.a_h(inputs))
         a_avg = tf.reduce_mean(a, axis=self.q_value_axis, keepdims=True, name='A_mean')
         # State-action values: Q(s, a) = V(s) + A(s, a) - A_mean(s, a)
-        return v + a - a_avg
+        q = v + a - a_avg
+        return q
 
     def reset_noise(self):
         if self.noise_std_init > 0:

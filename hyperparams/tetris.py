@@ -13,23 +13,26 @@ env.set_seed(seed)
 
 hyperparams = {
     # General
-    "name": "even_larger_lr_2",
+    "name": "remove_dense",
     "num_parallel_steps": 1000000,
     "seed": seed,
     "env": env,
 
     # Training and synchronization
-    "learning_rate": ParamScheduler(init_value=0.0005, decay_mode="step",
-                                    milestones=[100000000],
-                                    milestone_values=[0.00025]),
+    "learning_rate": ParamScheduler(init_value=0.002, decay_mode="lin",
+                                    milestones=[5e7, 8e7, 10e7],
+                                    milestone_values=[0.0005, 0.0005, 0.0001]),
+    # "learning_rate": ParamScheduler(init_value=0.0005, decay_mode="step",
+    #                                 milestones=[9e7],
+    #                                 milestone_values=[0.0001]),
     "replay_period": 64,
     "replay_size_multiplier": 4,
     "replay_epochs": 1,
     "replay_batch_size": 1024,
     "alpha": 0.7,
 
-    # Learning target returns
-    "gamma": 0.995,
+    # Discount factor
+    "gamma": 0.999,
 
     # Model
     "stem_network": model.generic.StemNetwork2DSmallNoDense(latent_dim=128),
@@ -40,5 +43,5 @@ hyperparams = {
 
     # Miscellaneous
     "memory_size": 4000000,
-    "stack_size": 4,
+    "stack_size": 1,
 }

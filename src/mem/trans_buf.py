@@ -1,5 +1,6 @@
 import numpy as np
 from src.utils.utils import shapes2arrays
+from src.utils.array_ops import del_first
 
 
 class TransitionsBuffer:
@@ -38,7 +39,7 @@ class TransitionsBuffer:
         else:
             self.hidden_states = None
 
-        self.init_prio = 1
+        self.initial_priority = 1
 
     def save_transitions(self, states, hidden_states, actions, scores, rewards, terminals, gamma):
         self.save_states(states, hidden_states)
@@ -46,7 +47,7 @@ class TransitionsBuffer:
         self.scalar_obs[self.stack_ptr, :, self.SCORES] = scores
         self.scalar_obs[self.stack_ptr, :, self.REWARDS] = rewards
         self.scalar_obs[self.stack_ptr, :, self.TERMINALS] = terminals
-        self.scalar_obs[self.stack_ptr, :, self.PRIORITIES] = self.init_prio
+        self.scalar_obs[self.stack_ptr, :, self.PRIORITIES] = self.initial_priority
 
         self.stack_ptr += 1
 
@@ -210,7 +211,7 @@ class TransitionsBuffer:
     def set_priorities(self, trans_indices, priorities):
         step_indices, env_indices = trans_indices
         self.scalar_obs[step_indices, env_indices, self.PRIORITIES] = priorities
-        self.init_prio = np.max((np.max(priorities), self.init_prio))
+        self.initial_priority = np.max((np.max(priorities), self.initial_priority))
 
     def delete_first(self, n):
         """Deletes the first n parallel steps of transitions from this memory. Keeps the data in-place."""
@@ -230,17 +231,6 @@ class TransitionsBuffer:
         total_bytes = bytes_per_trans * self.size
         gib = total_bytes / 2 ** 30
         print("Reserving %.2f GiB of RAM for TransitionsBuffer (ReplayMemory)..." % gib)
-
-
-def del_first(lst, n):
-    """Deletes in-place the first n elements from list and fills it with zeros."""
-    if n == 0:
-        return
-
-    m = len(lst) - n
-    assert m >= 0
-    lst[:m] = lst[n:]
-    lst[m:] = 0
 
 
 def get_stack_state_comp(states, step_stack_indices, env_stack_indices):

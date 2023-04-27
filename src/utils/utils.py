@@ -12,7 +12,7 @@ import stat
 import matplotlib.pyplot as plt
 import tensorflow as tf
 
-from src.utils.text_sty import print_warning, yellow, print_info
+from src.utils.text_sty import print_warning, yellow, print_info, print_success
 
 
 def finalize_plot(title=None, x_label=None, y_label=None, out_path=None, legend=False, logarithmic=False,
@@ -96,6 +96,23 @@ def ask_to_override_model(path):
         quit()
 
 
+def on_rmtree_error(func, path, exc_info):
+    """
+    Error handler for ``shutil.rmtree``.
+
+    If the error is due to an access error (read only file)
+    it attempts to add write permission and then retries.
+
+    If the error is for another reason it re-raises the error.
+    """
+    # Is the error an access error?
+    if not os.access(path, os.W_OK):
+        os.chmod(path, stat.S_IWUSR)  # overwrite file permissions
+        func(path)  # retry
+    else:
+        raise
+
+
 def remove_folder(path):
     shutil.rmtree(path, onerror=on_rmtree_error)
 
@@ -110,11 +127,13 @@ def config2text(config: dict):
 def config2json(config, out_path):
     """Allows only JSON-serializable data, e.g., native python objects."""
     with open(out_path, 'w') as json_file:
-        json.dump(config, json_file)
+        json.dump(config, json_file, indent=2)
 
 
-def data2pickle(data, out_path):
+def data2pickle(data, out_path, override=False):
     """Allows any type of data."""
+    # if override and os.path.exists(out_path):
+    #     os.remove(out_path)
     with open(out_path, 'wb') as pickle_file:
         pickle.dump(data, pickle_file, protocol=pickle.HIGHEST_PROTOCOL)
 
@@ -199,7 +218,9 @@ def set_seed(seed):
 
 
 def setup_hardware(use_gpu=True, gpu_memory_limit=None):
-    # When on Windows, use TensorFlow version 2.10.1 max! Otherwise, GPU not usable.
+    # When on Windows, use TensorFlow version 2.10.1 max! Otherwise, GPU not usable because
+    # Windows GPU support for TF was discontinued starting with TF 2.11. For more info, see
+    # https://www.tensorflow.org/install/pip.
     if use_gpu:
         os.environ["CUDA_VISIBLE_DEVICES"] = "0"  # make GPU visible
     else:
@@ -207,18 +228,48 @@ def setup_hardware(use_gpu=True, gpu_memory_limit=None):
 
     if use_gpu and gpu_memory_limit is not None:
         gpus = tf.config.list_physical_devices('GPU')
+        if len(gpus) == 0:
+            print_warning("There are no GPUs! Continuing with CPU only.")
+            return
         memory_config = [tf.config.experimental.VirtualDeviceConfiguration(memory_limit=gpu_memory_limit)]
-        tf.config.experimental.set_virtual_device_configuration(gpus[0], memory_config)
+        gpu = gpus[0]
+        tf.config.experimental.set_virtual_device_configuration(gpu, memory_config)
+        print_success(f"Using GPU.")
 
 
 def split_params(params, fn):
     fn_params = {}
-    accepted_params = inspect.signature(fn).parameters.keys()
+    accepted_params = get_function_signature_list(fn)
     for param in list(params.keys()):
         if param in accepted_params:
             fn_params[param] = params.pop(param)
     other_params = params
     return fn_params, other_params
+
+
+def get_function_signature_list(fn):
+    """Returns a list of variable names that occur in the given function's signature."""
+    return list(inspect.signature(fn).parameters.keys())
+
+
+def serialize_function_parameters(fn, local_scope: dict):
+    """Extracts all parameters of fn's signature from the local scope and turns them into
+    a JSON-serializable dictionary. Calls get_config() method of each parameter if that
+    method exists."""
+    signature = get_function_signature_list(fn)
+    serialized = dict()
+    for parameter_name in signature:
+        parameter = local_scope[parameter_name]
+        if has_method(parameter, "get_config"):
+            parameter = parameter.get_config()
+        serialized[parameter_name] = parameter
+    return serialized
+
+
+def has_method(obj, method_name: str):
+    """Checks if obj has a method called method_name."""
+    attr = getattr(obj, method_name, None)
+    return attr is not None and callable(attr)
 
 
 def log_model_graph(model, input_shapes, log_dir="tensorboard/graphs/"):

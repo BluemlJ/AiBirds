@@ -64,7 +64,7 @@ class ReplayMemory:
             return seq_ids, probabilities
 
     def get_size(self):
-        return self.trans_buf.buffer_len * self.trans_buf.num_par_inst
+        return self.trans_buf.size
 
     def get_num_transitions(self):
         return self.trans_buf.get_num_transitions()

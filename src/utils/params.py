@@ -4,7 +4,7 @@ import numpy as np
 class ParamScheduler:
     """Features linear warmup, exponential or linear decay and step milestones."""
 
-    def __init__(self, init_value, decay_mode=None, half_life_period=None, warmup_transitions=0,
+    def __init__(self, init_value, decay_mode="const", half_life_period=None, warmup_transitions=0,
                  minimum=0, milestones=None, milestone_factor=None, milestone_values=None):
         """
         :param init_value: Initial value of epsilon
@@ -28,11 +28,11 @@ class ParamScheduler:
         elif decay_mode == "step":
             assert milestones is not None and (milestone_factor is not None or milestone_values is not None)
             assert milestone_factor is None or 0 < milestone_factor < 1
-        elif decay_mode is not None:
+        elif decay_mode != "const":
             raise ValueError("Invalid decay mode given:", decay_mode)
 
         self.init_value = init_value
-        self.dynamic = decay_mode is not None
+        self.dynamic = decay_mode != "const"
         self.decay_mode = decay_mode
 
         assert warmup_transitions is None or milestones is None or milestones[0] > warmup_transitions
@@ -97,7 +97,7 @@ class ParamScheduler:
                 config.update({"half_life_period": self.half_life_period,
                                "minimum": self.minimum})
             elif self.decay_mode in ["step", "lin"]:
-                config.update({"milestones": self.milestones,
-                               "milestone_values": self.milestone_values,
+                config.update({"milestones": self.milestones.tolist(),
+                               "milestone_values": self.milestone_values.tolist(),
                                "milestone_factor": self.milestone_factor})
         return config

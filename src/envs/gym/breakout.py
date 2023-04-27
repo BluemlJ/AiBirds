@@ -1,4 +1,4 @@
-import gym
+import gymnasium as gym
 import cv2
 import numpy as np
 from src.envs.env import ParallelEnvironment
